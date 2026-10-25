@@ -1,7 +1,8 @@
 //! Plays one animated wallpaper, muted and looped, in one undecorated window per
 //! monitor. The Wallslæd extension hides these windows and shows them on the
 //! desktop. Commands arrive on stdin, one per line: `play`, `pause`, `quit`.
-//! Closing stdin also quits, so the player never outlives GNOME Shell.
+//! Closing stdin also quits, so the player never outlives GNOME Shell, and it
+//! exits within two seconds of either even if something hangs.
 //!
 //! Decoding goes through GStreamer's playbin3 into gtk4paintablesink, which takes
 //! hardware-decoded frames as DMA-BUFs without copying them through the CPU. If
@@ -22,6 +23,9 @@ const DGPU_DECODERS: &[&str] = &[
     "nvmpeg2videodec", "nvmpeg4videodec", "nvjpegdec", "nvh264sldec", "nvh265sldec",
     "nvvp8sldec", "nvvp9sldec", "nvav1sldec",
 ];
+
+/// After `quit` or end of stdin, how long a clean exit may take.
+const QUIT_GRACE_SECS: u64 = 2;
 
 enum Backend {
     Gst(gst::Player),
@@ -121,6 +125,12 @@ fn main() -> glib::ExitCode {
                 _ => {}
             }
         }
+        // Leave even if the main loop is stuck, so the extension never has to
+        // kill us.
+        std::thread::spawn(|| {
+            std::thread::sleep(std::time::Duration::from_secs(QUIT_GRACE_SECS));
+            std::process::exit(0);
+        });
         ctx.invoke(move || ml.quit());
     });
 
