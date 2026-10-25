@@ -31,3 +31,12 @@ All seven findings (F1–F7) and guards for U3–U5 are fixed on `fix/audit-find
 ## Next
 
 Nothing in progress. Ideas to research are in `ROADMAP.md`.
+
+### Planned: remove the dissolve transition
+
+The user finds it pixelated and ugly (2026-10-25). Not started.
+
+- `extension/wallslaed@hebbihebb/transitions.js`: drop `dissolve` from `EFFECTS` (so `random` never picks it), its shader and its `case`; treat a stored `dissolve` as `fade`.
+- `extension/wallslaed@hebbihebb/prefs.js`: drop the Dissolve entry from the transition list.
+- `data/io.github.hebbihebb.Wallslaed.gschema.xml`: keep the `dissolve` enum value. Schema changes are additive only, and users who picked it still have it stored.
+- Check: syntax check and a headless run through `tools/isolated-session.sh` with the transition set to `dissolve` and to `random`.
