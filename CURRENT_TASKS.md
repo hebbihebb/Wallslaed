@@ -23,6 +23,8 @@ Plan: music videos downloaded with yt-dlp play as the wallpaper with sound, outs
 | Accurate seeking, `--js-runtimes node`, systemd-scope fallback | implemented, verified except a real YouTube download |
 | README | **not updated** for the new features |
 
+User testing after a full restart (2026-10-25): working; Pixabay browsing works (Pexels currently refuses new API keys, on their side). A YouTube download from the Music Videos page showed no progress: yt-dlp hides progress when its output isn't a terminal. Fixed with `--progress` (verified against a local server); not yet installed. User: "accepted so far if there are no performance bugs".
+
 ## Audit (Codex, 2026-10-25)
 
 All seven findings (F1–F7) and guards for U3–U5 are fixed on `fix/audit-findings`, one commit per group; the report was committed there and then removed, so it never reaches `main`. The user accepted the installed build and asked for it "with patches" as the fallback.

@@ -128,6 +128,9 @@ pub fn command(url: &str, folder: &Path, temp: &Path, max_height: u32) -> Option
     }
     for a in [
         "--no-playlist",
+        // yt-dlp hides progress when its output isn't a terminal, and ours
+        // never is; without this the download looks stuck until it finishes.
+        "--progress",
         "--newline",
         "--no-colors",
         "--no-simulate",
@@ -244,6 +247,17 @@ mod tests {
         assert_eq!(title_of(Path::new("/m/Chill Mix [Td0iFptEmo0].mkv")), "Chill Mix");
         assert_eq!(title_of(Path::new("/m/[intro].mkv")), "[intro]");
         assert_eq!(title_of(Path::new("/m/plain.mp4")), "plain");
+    }
+
+    #[test]
+    fn command_forces_progress_and_ends_options() {
+        let Some(argv) = command("https://example.com/v", Path::new("/m"), Path::new("/t"), 1080) else {
+            return; // yt-dlp not installed here
+        };
+        let argv: Vec<String> = argv.iter().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert!(argv.iter().any(|a| a == "--progress"));
+        // The link comes last, after "--", so it can never be read as an option.
+        assert_eq!(&argv[argv.len() - 2..], ["--", "https://example.com/v"]);
     }
 
     #[test]
