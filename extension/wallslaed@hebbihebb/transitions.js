@@ -50,7 +50,9 @@ const ShaderEffects = Object.fromEntries(Object.entries(SHADERS).map(([name, cod
 
             setup(width, height) {
                 this._progress = this.get_uniform_location('progress');
-                this.set_uniform_float(this.get_uniform_location('size'), 2, [width, height]);
+                // Pixelate divides by the size; never let it be zero.
+                this.set_uniform_float(this.get_uniform_location('size'), 2,
+                    [Math.max(1, width), Math.max(1, height)]);
                 this.setProgress(0);
             }
 
@@ -131,8 +133,8 @@ export class Transitions {
         case 'pixelate':
         case 'wipe': {
             const effect = new ShaderEffects[name]();
-            this._animate(actor, duration, effect, (e, p) => e.setProgress(p));
-            effect.setup(actor.width, actor.height);
+            this._animate(actor, duration, effect, (e, p) => e.setProgress(p),
+                () => effect.setup(actor.width, actor.height));
             return;
         }
         default:
@@ -143,8 +145,10 @@ export class Transitions {
         }
     }
 
-    _animate(actor, duration, effect, step) {
+    // `init` runs once the effect is attached, before the first step.
+    _animate(actor, duration, effect, step, init) {
         actor.add_effect(effect);
+        init?.();
         const timeline = new Clutter.Timeline({actor, duration});
         timeline.set_progress_mode(Clutter.AnimationMode.EASE_IN_OUT_QUAD);
         timeline.connect('new-frame', () => step(effect, timeline.get_progress()));
