@@ -108,8 +108,9 @@ export class DesktopMenu {
         } catch {
             // Daemon not running.
         }
-        // The menu may have been cleaned up while we waited.
-        if (menu._wallslaed !== items)
+        // The menu may have been destroyed (its wallpaper replaced) or cleaned
+        // up while we waited.
+        if (!this._menus.has(menu) || menu._wallslaed !== items)
             return;
         const active = this._daemon.state?.media;
         items.music.menu.removeAll();
