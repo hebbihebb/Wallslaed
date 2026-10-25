@@ -71,21 +71,30 @@ export default class WallslaedPreferences extends ExtensionPreferences {
         settings.bind('recursive', recursive, 'active', Gio.SettingsBindFlags.DEFAULT);
         library.add(recursive);
 
+        // Minutes in the UI, seconds in GSettings. The lower limit matches the
+        // schema's 5 seconds, and showing a value never writes one back, so a
+        // setting made elsewhere is never rounded or clamped behind your back.
         const interval = new Adw.SpinRow({
             title: _('Change Every'),
             subtitle: _('Minutes'),
-            digits: 1,
-            adjustment: new Gtk.Adjustment({lower: 0.5, upper: 10080, step_increment: 1, page_increment: 15}),
+            digits: 2,
+            adjustment: new Gtk.Adjustment({lower: 5 / 60, upper: 10080, step_increment: 1, page_increment: 15}),
         });
-        interval.value = settings.get_uint('interval') / 60;
+        let showingInterval = false;
+        const showInterval = () => {
+            showingInterval = true;
+            interval.value = settings.get_uint('interval') / 60;
+            showingInterval = false;
+        };
+        showInterval();
         interval.connect('notify::value', () => {
+            if (showingInterval)
+                return;
             const secs = Math.max(5, Math.round(interval.value * 60));
             if (secs !== settings.get_uint('interval'))
                 settings.set_uint('interval', secs);
         });
-        settings.connect('changed::interval', () => {
-            interval.value = settings.get_uint('interval') / 60;
-        });
+        settings.connect('changed::interval', showInterval);
         library.add(interval);
 
         const paused = new Adw.SwitchRow({title: _('Pause Rotation')});
