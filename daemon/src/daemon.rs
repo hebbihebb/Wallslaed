@@ -2,6 +2,7 @@
 //! Everything runs on one GLib main loop; image work goes to a worker thread.
 
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -9,6 +10,7 @@ use gio::prelude::*;
 use glib::{ControlFlow, SourceId, Variant, VariantDict};
 
 use crate::library::{self, Kind};
+use crate::media::{self, MediaState};
 use crate::prepare::{self, Job, Prepared};
 use crate::shuffle::Bag;
 use crate::{BUS_NAME, IFACE, OBJECT_PATH, SCHEMA};
@@ -25,7 +27,26 @@ const INTROSPECTION: &str = r#"
     <method name="Rescan"/>
     <method name="ShowInFiles"/>
     <method name="GetState"><arg type="a{sv}" name="state" direction="out"/></method>
+    <method name="PlayMedia"><arg type="s" name="path" direction="in"/></method>
+    <method name="StopMedia"/>
+    <method name="ReportPosition">
+      <arg type="s" name="path" direction="in"/>
+      <arg type="d" name="seconds" direction="in"/>
+    </method>
+    <method name="ListMedia"><arg type="aa{sv}" name="items" direction="out"/></method>
+    <method name="Download">
+      <arg type="s" name="url" direction="in"/>
+      <arg type="s" name="id" direction="out"/>
+    </method>
+    <method name="CancelDownload"><arg type="s" name="id" direction="in"/></method>
+    <method name="ListDownloads"><arg type="a(ssds)" name="downloads" direction="out"/></method>
     <signal name="Changed"><arg type="a{sv}" name="state"/></signal>
+    <signal name="DownloadProgress">
+      <arg type="s" name="id"/>
+      <arg type="s" name="title"/>
+      <arg type="d" name="fraction"/>
+      <arg type="s" name="status"/>
+    </signal>
   </interface>
 </node>
 "#;
@@ -34,6 +55,9 @@ const INTROSPECTION: &str = r#"
 const MAX_FAILURES: u32 = 8;
 const RESCAN_DELAY_SECS: u32 = 3;
 const FALLBACK_SCREEN: (u32, u32) = (3840, 2160);
+/// Download progress is announced in steps of this fraction.
+const PROGRESS_STEP: f64 = 0.01;
+const SIGINT: i32 = 2;
 
 #[derive(Clone, Copy)]
 enum Step {
@@ -62,6 +86,28 @@ struct Daemon {
     conn: Option<gio::DBusConnection>,
     state_path: PathBuf,
     cache_dir: PathBuf,
+    /// Music video mode: while `media.active` is set the rotation is on hold.
+    media: MediaState,
+    media_path: PathBuf,
+    /// The active music video once its poster is ready.
+    media_now: Option<Prepared>,
+    downloads: Downloads,
+}
+
+#[derive(Default)]
+struct Downloads {
+    next_id: u64,
+    queue: VecDeque<(String, String)>,
+    running: Option<Running>,
+}
+
+struct Running {
+    id: String,
+    title: String,
+    fraction: f64,
+    status: String,
+    proc: gio::Subprocess,
+    cancelled: bool,
 }
 
 type Shared = Rc<RefCell<Daemon>>;
@@ -78,6 +124,7 @@ pub fn run() -> Result<(), String> {
     let cache_dir = glib::user_cache_dir().join("wallslaed");
     let _ = std::fs::create_dir_all(&state_dir);
     let state_path = state_dir.join("state.json");
+    let media_path = state_dir.join("media.json");
     let bag = std::fs::read(&state_path)
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
@@ -102,6 +149,10 @@ pub fn run() -> Result<(), String> {
         conn: None,
         state_path,
         cache_dir,
+        media: MediaState::load(&media_path),
+        media_path,
+        media_now: None,
+        downloads: Downloads::default(),
     }));
 
     connect_settings(&d);
@@ -189,12 +240,28 @@ fn on_bus(d: &Shared, conn: gio::DBusConnection) {
         s.conn = Some(conn);
     }
     rescan(d, true);
+    // Pick a music video back up after a restart or a new login.
+    let active = d.borrow().media.active.clone();
+    if let Some(path) = active {
+        if media::is_music_video(&media::folder(&d.borrow().settings), Path::new(&path)) {
+            start_media(d, path);
+        } else {
+            end_media(d);
+        }
+    }
 }
 
 fn handle_method(d: &Shared, method: &str, params: &Variant, inv: gio::DBusMethodInvocation) {
     match method {
-        "Next" => advance(d, Step::Next),
-        "Previous" => advance(d, Step::Previous),
+        // Changing the wallpaper ends a music video.
+        "Next" | "Previous" => {
+            let was_media = end_media(d);
+            let moved = advance(d, if method == "Next" { Step::Next } else { Step::Previous });
+            // Nothing to go back to: show the rotation's wallpaper again.
+            if was_media && !moved {
+                resume_rotation(d);
+            }
+        }
         // Setting a key runs our changed handler right away, and that handler
         // needs a mutable borrow, so don't hold one across the set.
         "SetPaused" => {
@@ -224,6 +291,66 @@ fn handle_method(d: &Shared, method: &str, params: &Variant, inv: gio::DBusMetho
             inv.return_value(Some(&Variant::tuple_from_iter([state])));
             return;
         }
+        "PlayMedia" => {
+            let path = params.child_value(0).get::<String>().unwrap_or_default();
+            if !media::is_music_video(&media::folder(&d.borrow().settings), Path::new(&path)) {
+                inv.return_error(gio::DBusError::InvalidArgs, "not a video in the music folder");
+                return;
+            }
+            start_media(d, path);
+        }
+        "StopMedia" => stop_media(d),
+        "ReportPosition" => {
+            let (path, secs) = params.get::<(String, f64)>().unwrap_or_default();
+            let mut s = d.borrow_mut();
+            if secs.is_finite() && media::is_music_video(&media::folder(&s.settings), Path::new(&path)) {
+                s.media.positions.insert(path, secs.max(0.0));
+                s.media.save(&s.media_path);
+            }
+        }
+        "ListMedia" => {
+            let folder = media::folder(&d.borrow().settings);
+            let items: Vec<Variant> = media::list(&folder)
+                .into_iter()
+                .map(|item| {
+                    let dict = VariantDict::new(None);
+                    let thumb = item.thumbnail.as_deref().and_then(Path::to_str).unwrap_or("");
+                    dict.insert("path", item.path.as_str());
+                    dict.insert("title", item.title.as_str());
+                    dict.insert("thumbnail", thumb);
+                    dict.end()
+                })
+                .collect();
+            let array = Variant::array_from_iter_with_type(glib::VariantTy::VARDICT, items);
+            inv.return_value(Some(&Variant::tuple_from_iter([array])));
+            return;
+        }
+        "Download" => {
+            let url = params.child_value(0).get::<String>().unwrap_or_default();
+            if !media::valid_url(&url) {
+                inv.return_error(gio::DBusError::InvalidArgs, "not an http(s) link");
+                return;
+            }
+            let id = queue_download(d, url);
+            inv.return_value(Some(&(id,).to_variant()));
+            return;
+        }
+        "CancelDownload" => {
+            let id = params.child_value(0).get::<String>().unwrap_or_default();
+            cancel_download(d, &id);
+        }
+        "ListDownloads" => {
+            let s = d.borrow();
+            let mut list: Vec<(String, String, f64, String)> = Vec::new();
+            if let Some(r) = &s.downloads.running {
+                list.push((r.id.clone(), r.title.clone(), r.fraction, r.status.clone()));
+            }
+            for (id, url) in &s.downloads.queue {
+                list.push((id.clone(), url.clone(), 0.0, "queued".into()));
+            }
+            inv.return_value(Some(&(list,).to_variant()));
+            return;
+        }
         _ => {
             inv.return_error(gio::DBusError::UnknownMethod, &format!("no method {method}"));
             return;
@@ -236,7 +363,7 @@ fn connect_settings(d: &Shared) {
     let settings = d.borrow().settings.clone();
     let d1 = d.clone();
     settings.connect_changed(None, move |_, key| match key {
-        "folder" | "recursive" | "animated-enabled" => rescan(&d1, false),
+        "folder" | "recursive" | "animated-enabled" | "music-folder" => rescan(&d1, false),
         "interval" => restart_timer(&d1),
         "paused" => {
             restart_timer(&d1);
@@ -280,6 +407,13 @@ fn rescan(d: &Shared, startup: bool) {
         if !animated {
             scan.files
                 .retain(|p| library::kind_of(Path::new(p)) == Some(Kind::Static));
+        }
+        // Music videos play with sound; never pick them at random. If the music
+        // folder holds the whole wallpaper folder, that would leave nothing, so
+        // the exclusion only applies to a music folder inside it.
+        let music = media::folder(&d.borrow().settings);
+        if !folder(&d.borrow().settings).starts_with(&music) {
+            scan.files.retain(|p| !Path::new(p).starts_with(&music));
         }
         let had_current = {
             let mut s = d.borrow_mut();
@@ -344,7 +478,8 @@ fn eligible(library: &[String]) -> impl Fn(&str) -> bool + '_ {
     move |p: &str| library.binary_search_by(|x| x.as_str().cmp(p)).is_ok()
 }
 
-fn advance(d: &Shared, step: Step) {
+/// Returns whether a wallpaper was picked.
+fn advance(d: &Shared, step: Step) -> bool {
     let pick = {
         let mut s = d.borrow_mut();
         let s = &mut *s;
@@ -357,9 +492,15 @@ fn advance(d: &Shared, step: Step) {
         }
     };
     match pick {
-        Some(path) => show(d, path),
-        None if matches!(step, Step::Previous) => {}
-        None => eprintln!("wallslaed: no wallpapers found in {}", folder(&d.borrow().settings).display()),
+        Some(path) => {
+            show(d, path);
+            true
+        }
+        None if matches!(step, Step::Previous) => false,
+        None => {
+            eprintln!("wallslaed: no wallpapers found in {}", folder(&d.borrow().settings).display());
+            false
+        }
     }
 }
 
@@ -402,11 +543,9 @@ fn apply(d: &Shared, p: Prepared) {
     {
         let mut s = d.borrow_mut();
         s.failures = 0;
-        if let Some(pic) = &p.picture {
-            let uri = gio::File::for_path(pic).uri();
-            // Set both so dark mode doesn't keep showing the old one.
-            let _ = s.background.set_string("picture-uri", &uri);
-            let _ = s.background.set_string("picture-uri-dark", &uri);
+        // A music video keeps the screen; the rotation catches up when it ends.
+        if s.media.active.is_none() {
+            set_background(&s, p.picture.as_deref());
         }
         s.current = Some(p);
         save_state(&s);
@@ -438,12 +577,20 @@ fn preload(d: &Shared) {
     });
 }
 
+fn set_background(s: &Daemon, picture: Option<&Path>) {
+    let Some(pic) = picture else { return };
+    let uri = gio::File::for_path(pic).uri();
+    // Set both so dark mode doesn't keep showing the old one.
+    let _ = s.background.set_string("picture-uri", &uri);
+    let _ = s.background.set_string("picture-uri-dark", &uri);
+}
+
 fn restart_timer(d: &Shared) {
     let mut s = d.borrow_mut();
     if let Some(id) = s.timer.take() {
         id.remove();
     }
-    if s.settings.boolean("paused") {
+    if s.settings.boolean("paused") || s.media.active.is_some() {
         return;
     }
     let secs = s.settings.uint("interval").max(5);
@@ -485,13 +632,251 @@ fn state_variant(s: &Daemon) -> Variant {
     dict.insert("favorite", s.bag.is_favorite());
     dict.insert("count", s.library.len() as u32);
     dict.insert("remaining", s.bag.remaining() as u32);
+
+    let active = s.media.active.as_deref().unwrap_or("");
+    let path = Path::new(active);
+    dict.insert("media", active);
+    dict.insert("media-title", if active.is_empty() { String::new() } else { media::title_of(path) });
+    dict.insert("media-position", s.media.positions.get(active).copied().unwrap_or(0.0));
+    dict.insert(
+        "media-art",
+        media::thumbnail_of(path).as_deref().and_then(Path::to_str).unwrap_or(""),
+    );
+    // Once ready, the music video takes the place of the wallpaper.
+    if let Some(m) = &s.media_now {
+        dict.insert("picture", path_str(&m.picture));
+        dict.insert("playable", path_str(&m.playable));
+        dict.insert("animated", true);
+    }
+    dict.insert("audio", s.media_now.is_some());
     dict.end()
+}
+
+/// Put a music video on the desktop and hold the rotation.
+fn start_media(d: &Shared, path: String) {
+    let job = {
+        let mut s = d.borrow_mut();
+        s.media.active = Some(path.clone());
+        s.media.save(&s.media_path);
+        s.media_now = None;
+        s.job(path)
+    };
+    restart_timer(d);
+    emit_changed(d);
+    let d = d.clone();
+    glib::spawn_future_local(async move {
+        let result = gio::spawn_blocking(move || prepare::prepare(&job)).await;
+        let ok = {
+            let mut s = d.borrow_mut();
+            match result {
+                // Ignore it if another video was picked in the meantime.
+                Ok(Ok(p)) if s.media.active.as_deref() == Some(p.source.as_str()) => {
+                    set_background(&s, p.picture.as_deref());
+                    s.media_now = Some(p);
+                    true
+                }
+                Ok(Ok(_)) => return,
+                Ok(Err(e)) => {
+                    eprintln!("wallslaed: can't play music video: {e}");
+                    false
+                }
+                Err(_) => false,
+            }
+        };
+        if ok {
+            emit_changed(&d);
+        } else {
+            stop_media(&d);
+        }
+    });
+}
+
+/// Leave music video mode without touching the background. Returns whether it was on.
+fn end_media(d: &Shared) -> bool {
+    let mut s = d.borrow_mut();
+    let was_on = s.media.active.take().is_some();
+    s.media_now = None;
+    if was_on {
+        s.media.save(&s.media_path);
+    }
+    was_on
+}
+
+/// Leave music video mode and go back to the rotation's wallpaper.
+fn stop_media(d: &Shared) {
+    if end_media(d) {
+        resume_rotation(d);
+    }
+}
+
+/// Show the rotation's current wallpaper again and restart its timer.
+fn resume_rotation(d: &Shared) {
+    {
+        let s = d.borrow();
+        set_background(&s, s.current.as_ref().and_then(|c| c.picture.as_deref()));
+    }
+    restart_timer(d);
+    emit_changed(d);
+    preload(d);
+}
+
+fn queue_download(d: &Shared, url: String) -> String {
+    let id = {
+        let mut s = d.borrow_mut();
+        s.downloads.next_id += 1;
+        let id = s.downloads.next_id.to_string();
+        s.downloads.queue.push_back((id.clone(), url.trim().to_owned()));
+        id
+    };
+    emit_progress(d, &id, &url, 0.0, "queued");
+    pump_downloads(d);
+    id
+}
+
+fn cancel_download(d: &Shared, id: &str) {
+    let queued = {
+        let mut s = d.borrow_mut();
+        if let Some(r) = s.downloads.running.as_mut().filter(|r| r.id == id) {
+            r.cancelled = true;
+            // yt-dlp cleans up after itself on SIGINT.
+            r.proc.send_signal(SIGINT);
+            return;
+        }
+        let q = &mut s.downloads.queue;
+        let before = q.len();
+        q.retain(|(qid, _)| qid != id);
+        before != q.len()
+    };
+    if queued {
+        emit_progress(d, id, "", 0.0, "cancelled");
+    }
+}
+
+/// Start the next queued download unless one is already running.
+fn pump_downloads(d: &Shared) {
+    let (id, url, argv, temp) = {
+        let mut s = d.borrow_mut();
+        if s.downloads.running.is_some() {
+            return;
+        }
+        let Some((id, url)) = s.downloads.queue.pop_front() else { return };
+        let folder = media::folder(&s.settings);
+        let temp = s.cache_dir.join("downloads");
+        let _ = std::fs::create_dir_all(&folder);
+        let _ = std::fs::create_dir_all(&temp);
+        let argv = media::command(&url, &folder, &temp, s.settings.uint("music-max-height"));
+        (id, url, argv, temp)
+    };
+    let proc = argv.ok_or_else(|| "yt-dlp is not installed".to_owned()).and_then(|argv| {
+        let argv: Vec<&std::ffi::OsStr> = argv.iter().map(|a| a.as_os_str()).collect();
+        let flags = gio::SubprocessFlags::STDOUT_PIPE
+            | gio::SubprocessFlags::STDERR_MERGE
+            | gio::SubprocessFlags::STDIN_INHERIT;
+        gio::Subprocess::newv(&argv, flags).map_err(|e| e.to_string())
+    });
+    let proc = match proc {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("wallslaed: download failed: {e}");
+            emit_progress(d, &id, &url, 0.0, &format!("error:{e}"));
+            pump_downloads(d);
+            return;
+        }
+    };
+    d.borrow_mut().downloads.running = Some(Running {
+        id: id.clone(),
+        title: url.clone(),
+        fraction: 0.0,
+        status: "downloading".into(),
+        proc: proc.clone(),
+        cancelled: false,
+    });
+    emit_progress(d, &id, &url, 0.0, "downloading");
+
+    let d = d.clone();
+    glib::spawn_future_local(async move {
+        let Some(stdout) = proc.stdout_pipe() else { return };
+        let input = gio::DataInputStream::new(&stdout);
+        let mut file = None;
+        let mut error = None;
+        while let Ok(Some(line)) = input.read_line_future(glib::Priority::DEFAULT).await {
+            let line = String::from_utf8_lossy(&line);
+            let Some(event) = media::parse_line(&line) else { continue };
+            let update = {
+                let mut s = d.borrow_mut();
+                let Some(r) = s.downloads.running.as_mut() else { break };
+                match event {
+                    media::Event::Title(t) => {
+                        r.title = t;
+                        true
+                    }
+                    media::Event::Progress(done, Some(total)) if total > 0 => {
+                        let f = (done as f64 / total as f64).clamp(0.0, 1.0);
+                        let step = (f - r.fraction).abs() >= PROGRESS_STEP || r.status != "downloading";
+                        if step {
+                            r.fraction = f;
+                            r.status = "downloading".into();
+                        }
+                        step
+                    }
+                    media::Event::Progress(..) => false,
+                    media::Event::Processing => {
+                        let first = r.status != "processing";
+                        r.status = "processing".into();
+                        r.fraction = 1.0;
+                        first
+                    }
+                    media::Event::File(f) => {
+                        file = Some(f);
+                        false
+                    }
+                    media::Event::Error(e) => {
+                        error = Some(e);
+                        false
+                    }
+                }
+                .then(|| (r.id.clone(), r.title.clone(), r.fraction, r.status.clone()))
+            };
+            if let Some((id, title, fraction, status)) = update {
+                emit_progress(&d, &id, &title, fraction, &status);
+            }
+        }
+        let ok = proc.wait_check_future().await.is_ok();
+        let Some(r) = d.borrow_mut().downloads.running.take() else { return };
+        let status = if r.cancelled {
+            "cancelled".to_owned()
+        } else if ok && file.is_some() {
+            "done".to_owned()
+        } else {
+            format!("error:{}", error.unwrap_or_else(|| "yt-dlp failed".into()))
+        };
+        if status != "done" {
+            // Only one download runs at a time, so anything here is its leftovers.
+            if let Ok(entries) = std::fs::read_dir(&temp) {
+                for e in entries.flatten() {
+                    let _ = std::fs::remove_file(e.path());
+                }
+            }
+        }
+        eprintln!("wallslaed: download {}: {status}", r.title);
+        emit_progress(&d, &r.id, &r.title, if status == "done" { 1.0 } else { r.fraction }, &status);
+        pump_downloads(&d);
+    });
+}
+
+fn emit_progress(d: &Shared, id: &str, title: &str, fraction: f64, status: &str) {
+    let s = d.borrow();
+    if let Some(conn) = &s.conn {
+        let args = (id, title, fraction, status).to_variant();
+        let _ = conn.emit_signal(None, OBJECT_PATH, IFACE, "DownloadProgress", Some(&args));
+    }
 }
 
 fn show_in_files(d: &Shared) {
     let s = d.borrow();
-    let (Some(conn), Some(cur)) = (&s.conn, &s.current) else { return };
-    let uri = gio::File::for_path(&cur.source).uri();
+    let source = s.media.active.as_deref().or(s.current.as_ref().map(|c| c.source.as_str()));
+    let (Some(conn), Some(source)) = (&s.conn, source) else { return };
+    let uri = gio::File::for_path(source).uri();
     let args = (vec![uri.to_string()], String::new()).to_variant();
     conn.call(
         Some("org.freedesktop.FileManager1"),

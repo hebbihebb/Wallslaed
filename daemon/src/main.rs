@@ -1,5 +1,6 @@
 mod daemon;
 mod library;
+mod media;
 mod prepare;
 mod shuffle;
 
@@ -22,7 +23,11 @@ usage: wallslaed <command>
   ban           never show the current wallpaper again
   show          open the current wallpaper's folder in Files
   rescan        re-read the wallpaper folder
-  status        print what's showing";
+  status        print what's showing
+  music         list the music videos
+  play <file>   play a music video (with sound) instead of the rotation
+  stop          stop the music video and go back to the rotation
+  download <url>  download a music video with yt-dlp";
 
 fn main() {
     let cmd = std::env::args().nth(1).unwrap_or_default();
@@ -38,6 +43,19 @@ fn main() {
         "show" | "reveal" => call("ShowInFiles", None),
         "rescan" => call("Rescan", None),
         "status" => status(),
+        "music" => list_media(),
+        "play" => match std::env::args().nth(2) {
+            Some(f) => {
+                let path = std::fs::canonicalize(&f).map_err(|e| format!("{f}: {e}"));
+                path.and_then(|p| call("PlayMedia", Some((p.to_string_lossy().into_owned(),).to_variant())))
+            }
+            None => Err(USAGE.to_owned()),
+        },
+        "stop" => call("StopMedia", None),
+        "download" => match std::env::args().nth(2) {
+            Some(url) => download(&url),
+            None => Err(USAGE.to_owned()),
+        },
         "-h" | "--help" | "help" => {
             println!("{USAGE}");
             Ok(())
@@ -78,6 +96,9 @@ fn status() -> Result<(), String> {
     let s = |k: &str| get(k).and_then(|v| v.get::<String>()).unwrap_or_default();
     let b = |k: &str| get(k).and_then(|v| v.get::<bool>()).unwrap_or(false);
     let u = |k: &str| get(k).and_then(|v| v.get::<u32>()).unwrap_or(0);
+    if !s("media").is_empty() {
+        println!("music:     {}", s("media-title"));
+    }
     println!("current:   {}", s("current"));
     if b("animated") {
         println!("playing:   {}", s("playable"));
@@ -86,4 +107,56 @@ fn status() -> Result<(), String> {
     println!("paused:    {}", b("paused"));
     println!("library:   {} wallpapers, {} left this cycle", u("count"), u("remaining"));
     Ok(())
+}
+
+fn list_media() -> Result<(), String> {
+    let reply = request("ListMedia", None)?;
+    for item in reply.child_value(0).iter() {
+        let dict = glib::VariantDict::new(Some(&item));
+        let path = dict.lookup_value("path", None).and_then(|v| v.get::<String>()).unwrap_or_default();
+        println!("{path}");
+    }
+    Ok(())
+}
+
+/// Queue a download, then follow its progress until it ends.
+fn download(url: &str) -> Result<(), String> {
+    let conn = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE)
+        .map_err(|e| e.to_string())?;
+    let main_loop = glib::MainLoop::new(None, false);
+    let wanted = std::rc::Rc::new(std::cell::RefCell::new(None::<String>));
+    let failed = std::rc::Rc::new(std::cell::Cell::new(false));
+    let (w, f, ml) = (wanted.clone(), failed.clone(), main_loop.clone());
+    let _sub = conn.subscribe_to_signal(
+        Some(BUS_NAME),
+        Some(IFACE),
+        Some("DownloadProgress"),
+        Some(OBJECT_PATH),
+        None,
+        gio::DBusSignalFlags::NONE,
+        move |sig| {
+            let Some((id, title, fraction, status)) = sig.parameters.get::<(String, String, f64, String)>() else { return };
+            if w.borrow().as_deref() != Some(id.as_str()) {
+                return;
+            }
+            match status.as_str() {
+                "downloading" => eprint!("\r{title}: {:.0}%   ", fraction * 100.0),
+                "processing" => eprint!("\r{title}: finishing...   "),
+                "queued" => eprint!("\rwaiting for another download...   "),
+                _ => {
+                    eprintln!("\r{title}: {status}");
+                    f.set(status != "done");
+                    ml.quit();
+                }
+            }
+        },
+    );
+    let reply = request("Download", Some((url,).to_variant()))?;
+    *wanted.borrow_mut() = reply.child_value(0).get::<String>();
+    main_loop.run();
+    if failed.get() {
+        Err("download failed".into())
+    } else {
+        Ok(())
+    }
 }

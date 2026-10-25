@@ -62,5 +62,28 @@
       <default>true</default>
       <summary>Show a still frame instead of animating while on battery</summary>
     </key>
+    <key name="music-folder" type="s">
+      <default>''</default>
+      <summary>Music video folder</summary>
+      <description>Videos here play with sound when picked, and never come up in the rotation. Empty means Videos/Music.</description>
+    </key>
+    <key name="music-volume" type="d">
+      <range min="0" max="1"/>
+      <default>0.8</default>
+      <summary>Music video volume</summary>
+    </key>
+    <key name="music-max-height" type="u">
+      <range min="144" max="4320"/>
+      <default>1080</default>
+      <summary>Highest video resolution to download, in pixels of height</summary>
+    </key>
+    <key name="pexels-api-key" type="s">
+      <default>''</default>
+      <summary>Pexels API key, for browsing animated wallpapers</summary>
+    </key>
+    <key name="pixabay-api-key" type="s">
+      <default>''</default>
+      <summary>Pixabay API key, for browsing animated wallpapers</summary>
+    </key>
   </schema>
 </schemalist>
