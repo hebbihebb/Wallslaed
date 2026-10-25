@@ -17,6 +17,14 @@ const transitions = () => [
     ['pixelate', _('Pixelate')],
     ['wipe', _('Wipe')],
     ['blur', _('Blur')],
+    ['tilt', _('Tilt')],
+    ['burn', _('Burn')],
+    ['freeze', _('Freeze')],
+    ['shatter', _('Shatter')],
+    ['iris', _('Iris')],
+    ['ripple', _('Ripple')],
+    ['melt', _('Melt')],
+    ['leak', _('Light Leak')],
     ['random', _('Random')],
 ];
 

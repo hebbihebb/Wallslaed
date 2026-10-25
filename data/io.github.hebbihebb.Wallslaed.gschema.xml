@@ -10,6 +10,14 @@
     <value nick="wipe" value="6"/>
     <value nick="blur" value="7"/>
     <value nick="random" value="8"/>
+    <value nick="tilt" value="9"/>
+    <value nick="burn" value="10"/>
+    <value nick="freeze" value="11"/>
+    <value nick="shatter" value="12"/>
+    <value nick="iris" value="13"/>
+    <value nick="ripple" value="14"/>
+    <value nick="melt" value="15"/>
+    <value nick="leak" value="16"/>
   </enum>
 
   <schema id="io.github.hebbihebb.Wallslaed" path="/io/github/hebbihebb/Wallslaed/">
