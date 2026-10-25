@@ -6,7 +6,7 @@ Last updated: 2026-10-25 (menu race and transition fixes on a branch, installed 
 
 - `main`: accepted work, including the audit fixes and music videos (merged 2026-10-25), pushed to `origin`.
 - `fix/audit-findings` and `feature/music-videos`: merged into `main` and deleted (never pushed). `main` is the only branch.
-- Installed in the live session: the `ccb294b` code, the same as `main`.
+- Installed in the live session: `fix/menu-race-dissolve` (`761c5ae`), installed 2026-10-25 for testing; the extension code takes effect after logging out and back in. Reinstall `main` to go back.
 - Backup of the build accepted before this work: `~/.local/share/wallslaed-backups/installed-2026-10-25/` (`restore.sh` puts it back).
 
 ## Done: music videos, media controls, wallpaper browser
