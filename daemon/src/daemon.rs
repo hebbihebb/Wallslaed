@@ -195,13 +195,16 @@ fn handle_method(d: &Shared, method: &str, params: &Variant, inv: gio::DBusMetho
     match method {
         "Next" => advance(d, Step::Next),
         "Previous" => advance(d, Step::Previous),
+        // Setting a key runs our changed handler right away, and that handler
+        // needs a mutable borrow, so don't hold one across the set.
         "SetPaused" => {
             let p = params.child_value(0).get::<bool>().unwrap_or(false);
-            let _ = d.borrow().settings.set_boolean("paused", p);
+            let settings = d.borrow().settings.clone();
+            let _ = settings.set_boolean("paused", p);
         }
         "TogglePause" => {
-            let s = d.borrow();
-            let _ = s.settings.set_boolean("paused", !s.settings.boolean("paused"));
+            let settings = d.borrow().settings.clone();
+            let _ = settings.set_boolean("paused", !settings.boolean("paused"));
         }
         "ToggleFavorite" => {
             d.borrow_mut().bag.toggle_favorite();
