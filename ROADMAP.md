@@ -24,5 +24,5 @@ Locking the screen disables the extension (no `unlock-dialog` session mode), whi
 
 ## Not yet exercised
 
-- The desktop menu's music items under rapid use.
+- The desktop menu under rapid real clicks (exercised only programmatically in a headless shell, 2026-10-25).
 - The Browse page with Pexels (Pexels was refusing new API keys on 2026-10-25; Pixabay works).

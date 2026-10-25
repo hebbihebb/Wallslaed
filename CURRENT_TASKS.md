@@ -1,6 +1,6 @@
 # Current Tasks
 
-Last updated: 2026-10-25 (accepted, merged, pushed).
+Last updated: 2026-10-25 (menu race and transition fixes on a branch, installed for testing).
 
 ## Git state
 
@@ -28,15 +28,15 @@ User testing after a full restart (2026-10-25): working; Pixabay browsing works 
 
 All seven findings (F1–F7) and guards for U3–U5 are fixed on `fix/audit-findings`, one commit per group; the report was committed there and then removed, so it never reaches `main`. The user accepted the installed build and asked for it "with patches" as the fallback.
 
-## Next
+## In progress: `fix/menu-race-dissolve` (2026-10-25)
 
-Nothing in progress. Ideas to research are in `ROADMAP.md`.
+Follows a full desktop freeze on 2026-10-25 06:15 while cycling wallpapers from the desktop menu: GNOME Shell stopped answering (at-spi logged it unresponsive) with no crash, JS error or GPU message. Rapid cycling and right-clicking during transitions did **not** hang a headless shell, so the freeze itself is unexplained. Suspected: the NVIDIA driver (both screens run on it) during a shader transition. If it recurs, get `eu-stack -p $(pgrep -x gnome-shell)` from a TTY or SSH before powering off.
 
-### Planned: remove the dissolve transition
+| Change | State |
+| --- | --- |
+| `menu.js`: the music list no longer touches a menu destroyed while `ListMedia` was pending (the 05:50 errors at `menu.js:115-122`) | verified: forced race in an isolated shell, 6/12/6 errors before, 0 after |
+| `transitions.js`: the outgoing wallpaper stops taking clicks and closes its menu, so a right-click mid-transition opens the new wallpaper's menu (GNOME's `boxpointer.js` disposed-object errors) | verified: 30 rounds, 0 errors, every click landed on the new wallpaper |
+| Dissolve removed: not in `EFFECTS` or the preferences list; a stored `dissolve` plays and displays as Crossfade; schema value kept | verified headless with `dissolve` and `random` stored |
+| Wipe: removed the per-row edge jitter that smeared the soft edge into horizontal streaks (user report: "a horizontal swipe left pixelated effect in its wake") | verified by frame captures mid-transition (software rendering) |
 
-The user finds it pixelated and ugly (2026-10-25). Not started.
-
-- `extension/wallslaed@hebbihebb/transitions.js`: drop `dissolve` from `EFFECTS` (so `random` never picks it), its shader and its `case`; treat a stored `dissolve` as `fade`.
-- `extension/wallslaed@hebbihebb/prefs.js`: drop the Dissolve entry from the transition list.
-- `data/io.github.hebbihebb.Wallslaed.gschema.xml`: keep the `dissolve` enum value. Schema changes are additive only, and users who picked it still have it stored.
-- Check: syntax check and a headless run through `tools/isolated-session.sh` with the transition set to `dissolve` and to `random`.
+Not tested: the real NVIDIA rendering, and real mouse clicks. Next: the user tries it after logging back in; on acceptance merge into `main`.
