@@ -14,7 +14,6 @@ const transitions = () => [
     ['fade', _('Crossfade')],
     ['zoom', _('Zoom')],
     ['slide', _('Slide')],
-    ['dissolve', _('Dissolve')],
     ['pixelate', _('Pixelate')],
     ['wipe', _('Wipe')],
     ['blur', _('Blur')],
@@ -142,7 +141,9 @@ export default class WallslaedPreferences extends ExtensionPreferences {
             model: Gtk.StringList.new(TRANSITIONS.map(([, label]) => label)),
         });
         const syncEffect = () => {
-            const i = TRANSITIONS.findIndex(([id]) => id === settings.get_string('transition'));
+            // Dissolve was removed; the shell plays a crossfade for it instead.
+            const current = settings.get_string('transition').replace(/^dissolve$/, 'fade');
+            const i = TRANSITIONS.findIndex(([id]) => id === current);
             effect.selected = Math.max(0, i);
         };
         syncEffect();

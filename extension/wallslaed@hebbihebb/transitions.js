@@ -9,33 +9,29 @@ import Shell from 'gi://Shell';
 import St from 'gi://St';
 
 import * as Background from 'resource:///org/gnome/shell/ui/background.js';
+import * as BoxPointer from 'resource:///org/gnome/shell/ui/boxpointer.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
-const EFFECTS = ['fade', 'zoom', 'slide', 'dissolve', 'pixelate', 'wipe', 'blur'];
+// A stored 'dissolve' (removed) falls through to the crossfade.
+const EFFECTS = ['fade', 'zoom', 'slide', 'pixelate', 'wipe', 'blur'];
 
 const DECLARATIONS = `
 uniform float progress;
-uniform vec2 size;
-float hash(vec2 p) {
-    return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
-}`;
+uniform vec2 size;`;
 
 // Each snippet fades the old wallpaper out (premultiplied alpha) as progress
 // goes from 0 to 1, revealing the new one underneath.
 const SHADERS = {
-    dissolve: `
-        vec2 cell = floor(cogl_tex_coord0_in.st * size / 6.0);
-        float n = hash(cell);
-        float a = smoothstep(progress * 1.1 - 0.1, progress * 1.1, n);
-        cogl_color_out *= a;`,
     pixelate: `
         float px = 1.0 + progress * progress * 96.0;
         vec2 uv = (floor(cogl_tex_coord0_in.st * size / px) + 0.5) * px / size;
         cogl_color_out = texture2D(cogl_sampler0, uv);
         cogl_color_out *= 1.0 - smoothstep(0.55, 1.0, progress);`,
+    // A smooth diagonal edge. Per-row jitter here once smeared the soft edge
+    // into horizontal streaks.
     wipe: `
         vec2 st = cogl_tex_coord0_in.st;
-        float d = (st.x * 0.75 + st.y * 0.25) + (hash(vec2(floor(st.y * size.y / 3.0), 0.0)) - 0.5) * 0.02;
+        float d = st.x * 0.75 + st.y * 0.25;
         float a = smoothstep(progress * 1.15 - 0.15, progress * 1.15, d);
         cogl_color_out *= a;`,
 };
@@ -107,6 +103,12 @@ export class Transitions {
         actor.connect('destroy', () => this._running.delete(actor));
         const done = () => actor.destroy();
 
+        // The outgoing wallpaper stays on top while it fades. Let clicks reach
+        // the new one underneath, so a right-click never opens a menu that is
+        // about to be destroyed with its wallpaper.
+        actor.reactive = false;
+        actor._backgroundMenu?.close(BoxPointer.PopupAnimation.NONE);
+
         switch (name) {
         case 'zoom':
             actor.set_pivot_point(0.5, 0.5);
@@ -129,7 +131,6 @@ export class Transitions {
                     actor.opacity = 255 * (1 - p);
                 });
             return;
-        case 'dissolve':
         case 'pixelate':
         case 'wipe': {
             const effect = new ShaderEffects[name]();
