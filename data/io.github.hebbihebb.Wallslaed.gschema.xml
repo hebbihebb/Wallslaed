@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist gettext-domain="wallslaed">
+  <enum id="io.github.hebbihebb.Wallslaed.Transition">
+    <value nick="none" value="0"/>
+    <value nick="fade" value="1"/>
+    <value nick="zoom" value="2"/>
+    <value nick="slide" value="3"/>
+    <value nick="dissolve" value="4"/>
+    <value nick="pixelate" value="5"/>
+    <value nick="wipe" value="6"/>
+    <value nick="blur" value="7"/>
+    <value nick="random" value="8"/>
+  </enum>
+
+  <schema id="io.github.hebbihebb.Wallslaed" path="/io/github/hebbihebb/Wallslaed/">
+    <key name="folder" type="s">
+      <default>''</default>
+      <summary>Wallpaper folder</summary>
+      <description>Empty means the Pictures folder.</description>
+    </key>
+    <key name="recursive" type="b">
+      <default>true</default>
+      <summary>Include subfolders</summary>
+    </key>
+    <key name="interval" type="u">
+      <range min="5" max="604800"/>
+      <default>900</default>
+      <summary>Seconds between wallpaper changes</summary>
+    </key>
+    <key name="paused" type="b">
+      <default>false</default>
+      <summary>Stop changing wallpapers on the timer</summary>
+    </key>
+    <key name="favorite-weight" type="u">
+      <range min="1" max="10"/>
+      <default>3</default>
+      <summary>How many times per cycle a favorite is shown</summary>
+    </key>
+    <key name="prescale" type="b">
+      <default>true</default>
+      <summary>Shrink large images to screen size before showing them</summary>
+      <description>Keeps GNOME Shell from holding full-size 4K/8K textures in memory.</description>
+    </key>
+    <key name="transition" enum="io.github.hebbihebb.Wallslaed.Transition">
+      <default>'fade'</default>
+      <summary>Transition effect between wallpapers</summary>
+    </key>
+    <key name="transition-duration" type="u">
+      <range min="100" max="5000"/>
+      <default>1000</default>
+      <summary>Transition length in milliseconds</summary>
+    </key>
+    <key name="animated-enabled" type="b">
+      <default>true</default>
+      <summary>Include animated wallpapers (GIF and video)</summary>
+    </key>
+    <key name="animated-pause-when-covered" type="b">
+      <default>true</default>
+      <summary>Pause animated wallpapers while a maximized or fullscreen window covers the desktop</summary>
+    </key>
+    <key name="animated-pause-on-battery" type="b">
+      <default>true</default>
+      <summary>Show a still frame instead of animating while on battery</summary>
+    </key>
+  </schema>
+</schemalist>

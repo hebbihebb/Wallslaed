@@ -1,0 +1,19 @@
+[Unit]
+Description=Wallslæd wallpaper rotation
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=dbus
+BusName=io.github.hebbihebb.Wallslaed
+ExecStart=%h/.local/bin/wallslaed daemon
+Restart=on-failure
+RestartSec=5
+# Keep it light and out of the way of the desktop.
+Nice=10
+IOSchedulingClass=idle
+MemoryHigh=256M
+MemoryMax=600M
+
+[Install]
+WantedBy=graphical-session.target
