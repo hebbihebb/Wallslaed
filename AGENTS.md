@@ -5,8 +5,9 @@ The authoritative instructions for every coding agent working on this repository
 ## Read First
 
 1. `CURRENT_TASKS.md`: what is in progress, its state, and what comes next.
-2. `README.md`: how the daemon, extension and player fit together, and why they are separate.
-3. `git status`: if there is uncommitted work you did not create, find out what it is before touching anything.
+2. `ROADMAP.md`: ideas and research not yet started. Nothing there is approved work; ask before starting an item.
+3. `README.md`: how the daemon, extension and player fit together, and why they are separate.
+4. `git status`: if there is uncommitted work you did not create, find out what it is before touching anything.
 
 ## The Golden Rule: the Live Desktop Is Off-Limits
 

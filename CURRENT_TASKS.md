@@ -30,7 +30,4 @@ All seven findings (F1–F7) and guards for U3–U5 are fixed on `fix/audit-find
 
 ## Next
 
-Nothing in progress. Open ideas, not planned:
-
-- Keep music playing on the lock screen (needs `unlock-dialog` session mode support).
-- Not yet exercised: the desktop menu's music items under rapid use, and Pexels (refusing new API keys at the time).
+Nothing in progress. Ideas to research are in `ROADMAP.md`.
