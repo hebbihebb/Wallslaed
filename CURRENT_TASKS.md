@@ -5,8 +5,8 @@ Last updated: 2026-10-25 (accepted, merged, pushed).
 ## Git state
 
 - `main`: accepted work, including the audit fixes and music videos (merged 2026-10-25), pushed to `origin`.
-- `fix/audit-findings` and `feature/music-videos`: merged into `main`; kept locally until the user agrees to delete them.
-- Installed in the live session: the `feature/music-videos` tip (`ccb294b` code), the same as `main`.
+- `fix/audit-findings` and `feature/music-videos`: merged into `main` and deleted (never pushed). `main` is the only branch.
+- Installed in the live session: the `ccb294b` code, the same as `main`.
 - Backup of the build accepted before this work: `~/.local/share/wallslaed-backups/installed-2026-10-25/` (`restore.sh` puts it back).
 
 ## Done: music videos, media controls, wallpaper browser
