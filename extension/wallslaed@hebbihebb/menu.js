@@ -7,7 +7,13 @@ import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 export class DesktopMenu {
     constructor(daemon, injections) {
         this._daemon = daemon;
-        this._menus = new Set();
+        this._menus = new Map(); // menu -> its destroy handler id
+
+        // Menus can stay open while the daemon comes, goes or changes state.
+        this._changedId = daemon.connect('changed', () => {
+            for (const menu of this._menus.keys())
+                this._refresh(menu);
+        });
 
         // GNOME builds a new BackgroundMenu every time the background changes,
         // so add our items lazily, the first time each one opens.
@@ -43,10 +49,13 @@ export class DesktopMenu {
             menu.addMenuItem(section, 0);
             menu.addMenuItem(items.separator, 1);
             menu._wallslaed = items;
-            this._menus.add(menu);
-            menu.connect('destroy', () => this._menus.delete(menu));
+            this._menus.set(menu, menu.connect('destroy', () => this._menus.delete(menu)));
         }
+        this._refresh(menu);
+    }
 
+    _refresh(menu) {
+        const items = menu._wallslaed;
         const state = this._daemon.state;
         const hasCurrent = !!state?.current;
         for (const key of ['next', 'previous', 'pause'])
@@ -60,7 +69,9 @@ export class DesktopMenu {
     }
 
     destroy() {
-        for (const menu of this._menus) {
+        this._daemon.disconnect(this._changedId);
+        for (const [menu, id] of this._menus) {
+            menu.disconnect(id);
             menu._wallslaed.section.destroy();
             menu._wallslaed.separator.destroy();
             delete menu._wallslaed;
