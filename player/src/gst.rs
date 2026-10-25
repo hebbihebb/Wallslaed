@@ -2,7 +2,7 @@
 //! build doesn't require GStreamer development headers. Properties go through
 //! GObject (via glib-rs), which needs no GStreamer-specific bindings.
 
-use std::ffi::{c_char, c_int, c_void, CString};
+use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::ptr;
 
 use gtk::glib::translate::{from_glib_full, from_glib_none, ToGlibPtr};
@@ -14,8 +14,10 @@ const STATE_PAUSED: c_int = 3;
 const STATE_PLAYING: c_int = 4;
 const MESSAGE_EOS: c_int = 1 << 0;
 const MESSAGE_ERROR: c_int = 1 << 1;
+const MESSAGE_ASYNC_DONE: c_int = 1 << 21;
 const FORMAT_TIME: c_int = 3;
 const SEEK_FLUSH: c_int = 1 << 0;
+const SEEK_ACCURATE: c_int = 1 << 1;
 const SEEK_KEY_UNIT: c_int = 1 << 2;
 const CLOCK_TIME_NONE: u64 = u64::MAX;
 
@@ -29,6 +31,9 @@ extern "C" {
     fn gst_mini_object_unref(object: *mut c_void);
     fn gst_object_unref(object: *mut c_void);
     fn gst_element_seek_simple(element: *mut c_void, format: c_int, flags: c_int, pos: i64) -> c_int;
+    fn gst_element_query_position(element: *mut c_void, format: c_int, cur: *mut i64) -> c_int;
+    fn gst_element_query_duration(element: *mut c_void, format: c_int, dur: *mut i64) -> c_int;
+    fn gst_structure_get_name(structure: *const c_void) -> *const c_char;
 }
 
 pub struct Player {
@@ -47,7 +52,8 @@ fn make(factory: &str) -> Option<glib::Object> {
 }
 
 impl Player {
-    pub fn new(uri: &str) -> Result<(Player, gdk::Paintable), String> {
+    /// `audio` turns sound on (music videos); `start` is where to begin, in seconds.
+    pub fn new(uri: &str, audio: bool, start: f64) -> Result<(Player, gdk::Paintable), String> {
         unsafe {
             let mut err = ptr::null_mut();
             if gst_init_check(ptr::null_mut(), ptr::null_mut(), &mut err) == 0 {
@@ -60,10 +66,18 @@ impl Player {
             .or_else(|| make("playbin"))
             .ok_or("playbin not available")?;
 
-        // Video only, and no CPU conversion elements between decoder and sink.
+        // Video only unless asked for sound, and no CPU conversion elements
+        // between decoder and sink.
         let flags_type = pipeline.property_type("flags").ok_or("playbin has no flags")?;
         let flags = glib::FlagsClass::with_type(flags_type)
-            .and_then(|c| c.builder().set_by_nick("video").set_by_nick("native-video").build())
+            .and_then(|c| {
+                let b = c.builder().set_by_nick("video").set_by_nick("native-video");
+                if audio {
+                    b.set_by_nick("audio").set_by_nick("soft-volume").build()
+                } else {
+                    b.build()
+                }
+            })
             .ok_or("unexpected playbin flags")?;
         pipeline.set_property_from_value("flags", &flags);
         pipeline.set_property("uri", uri);
@@ -71,23 +85,37 @@ impl Player {
         let paintable = sink.property::<gdk::Paintable>("paintable");
 
         // Loop on end-of-stream; exit on errors so the extension falls back to
-        // the still frame.
+        // the still frame. The start position can only be sought once the
+        // pipeline has prerolled, which the first async-done message signals.
         let element = SendPtr(pipeline.as_ptr() as *mut c_void);
         let bus = SendPtr(unsafe { gst_element_get_bus(element.0) });
+        let mut start = (start > 0.0).then(|| (start * 1e9) as i64);
         std::thread::spawn(move || {
             let (element, bus) = (element, bus);
+            let types = MESSAGE_EOS | MESSAGE_ERROR | MESSAGE_ASYNC_DONE;
             loop {
-                let msg = unsafe { gst_bus_timed_pop_filtered(bus.0, CLOCK_TIME_NONE, MESSAGE_EOS | MESSAGE_ERROR) };
+                let msg = unsafe { gst_bus_timed_pop_filtered(bus.0, CLOCK_TIME_NONE, types) };
                 if msg.is_null() {
                     break;
                 }
-                let is_eos = unsafe { gst_message_get_structure(msg).is_null() };
+                // EOS carries no structure; the others are told apart by name.
+                let name = unsafe {
+                    let st = gst_message_get_structure(msg);
+                    (!st.is_null()).then(|| CStr::from_ptr(gst_structure_get_name(st)).to_bytes().to_vec())
+                };
                 unsafe { gst_mini_object_unref(msg) };
-                if !is_eos {
-                    eprintln!("wallslaed-player: playback error");
-                    std::process::exit(1);
-                }
-                unsafe { gst_element_seek_simple(element.0, FORMAT_TIME, SEEK_FLUSH | SEEK_KEY_UNIT, 0) };
+                let pos = match name.as_deref() {
+                    None => 0,
+                    Some(b"GstMessageAsyncDone") => match start.take() {
+                        Some(pos) => pos,
+                        None => continue,
+                    },
+                    Some(_) => {
+                        eprintln!("wallslaed-player: playback error");
+                        std::process::exit(1);
+                    }
+                };
+                unsafe { gst_element_seek_simple(element.0, FORMAT_TIME, SEEK_FLUSH | SEEK_KEY_UNIT, pos) };
             }
             unsafe { gst_object_unref(bus.0) };
         });
@@ -98,6 +126,34 @@ impl Player {
     pub fn set_playing(&self, playing: bool) {
         let state = if playing { STATE_PLAYING } else { STATE_PAUSED };
         unsafe { gst_element_set_state(self.as_ptr(), state) };
+    }
+
+    pub fn set_muted(&self, muted: bool) {
+        self.pipeline.set_property("mute", muted);
+    }
+
+    pub fn set_volume(&self, volume: f64) {
+        self.pipeline.set_property("volume", volume.clamp(0.0, 1.0));
+    }
+
+    /// Current position in seconds.
+    pub fn position(&self) -> Option<f64> {
+        let mut ns = -1;
+        let ok = unsafe { gst_element_query_position(self.as_ptr(), FORMAT_TIME, &mut ns) } != 0;
+        (ok && ns >= 0).then(|| ns as f64 / 1e9)
+    }
+
+    /// Length in seconds.
+    pub fn duration(&self) -> Option<f64> {
+        let mut ns = -1;
+        let ok = unsafe { gst_element_query_duration(self.as_ptr(), FORMAT_TIME, &mut ns) } != 0;
+        (ok && ns >= 0).then(|| ns as f64 / 1e9)
+    }
+
+    /// Seek exactly where asked; resuming and looping snap to a keyframe instead.
+    pub fn seek(&self, secs: f64) {
+        let ns = (secs.max(0.0) * 1e9) as i64;
+        unsafe { gst_element_seek_simple(self.as_ptr(), FORMAT_TIME, SEEK_FLUSH | SEEK_ACCURATE, ns) };
     }
 
     fn as_ptr(&self) -> *mut c_void {
