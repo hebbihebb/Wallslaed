@@ -13,7 +13,6 @@ const transitions = () => [
     ['none', _('None')],
     ['fade', _('Crossfade')],
     ['zoom', _('Zoom')],
-    ['slide', _('Slide')],
     ['pixelate', _('Pixelate')],
     ['wipe', _('Wipe')],
     ['blur', _('Blur')],
@@ -21,7 +20,6 @@ const transitions = () => [
     ['burn', _('Burn')],
     ['freeze', _('Freeze')],
     ['shatter', _('Shatter')],
-    ['iris', _('Iris')],
     ['ripple', _('Ripple')],
     ['melt', _('Melt')],
     ['leak', _('Light Leak')],
@@ -149,8 +147,8 @@ export default class WallslaedPreferences extends ExtensionPreferences {
             model: Gtk.StringList.new(TRANSITIONS.map(([, label]) => label)),
         });
         const syncEffect = () => {
-            // Dissolve was removed; the shell plays a crossfade for it instead.
-            const current = settings.get_string('transition').replace(/^dissolve$/, 'fade');
+            // Dissolve, Slide and Iris were removed; the shell plays a crossfade for them.
+            const current = settings.get_string('transition').replace(/^(dissolve|slide|iris)$/, 'fade');
             const i = TRANSITIONS.findIndex(([id]) => id === current);
             effect.selected = Math.max(0, i);
         };

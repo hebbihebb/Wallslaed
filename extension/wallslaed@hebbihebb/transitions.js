@@ -12,10 +12,10 @@ import * as Background from 'resource:///org/gnome/shell/ui/background.js';
 import * as BoxPointer from 'resource:///org/gnome/shell/ui/boxpointer.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
-// The `random` pool. A stored 'dissolve' (removed) falls through to the
-// crossfade. Newer effects join the pool once they're accepted on a real
+// The `random` pool. A stored 'dissolve', 'slide' or 'iris' (removed) falls
+// through to the crossfade. Newer effects join the pool once they're accepted on a real
 // desktop; until then they play only when picked by name.
-const EFFECTS = ['fade', 'zoom', 'slide', 'pixelate', 'wipe', 'blur'];
+const EFFECTS = ['fade', 'zoom', 'pixelate', 'wipe', 'blur'];
 
 // Shared by every shader. `seed` (0..1) varies each transition. Lengths are in
 // screen heights (`wsl_q`), so effects look the same at any resolution, and
@@ -223,16 +223,6 @@ const SHADERS = {
         }
         cogl_color_out = outc;`,
     },
-    // A soft circle opens from the middle; the old image shades slightly
-    // towards its edge.
-    iris: `
-        vec2 st = cogl_tex_coord0_in.st;
-        float aspect = size.x / size.y;
-        float r = length((st - 0.5) * vec2(aspect, 1.0));
-        float R = mix(-0.15, 0.5 * length(vec2(aspect, 1.0)) + 0.02, progress);
-        vec4 c = cogl_color_out;
-        c.rgb *= mix(0.82, 1.0, smoothstep(R, R + 0.35, r));
-        cogl_color_out = (c + wsl_dither(st)) * smoothstep(R, R + 0.15, r);`,
     // One gentle refracting ring spreads from the middle, taking the old
     // image with it.
     ripple: `
@@ -371,12 +361,6 @@ export class Transitions {
             actor.ease({
                 scale_x: 1.12, scale_y: 1.12, opacity: 0, duration,
                 mode: Clutter.AnimationMode.EASE_IN_QUAD, onComplete: done,
-            });
-            return;
-        case 'slide':
-            actor.ease({
-                translation_x: -actor.width, opacity: 64, duration,
-                mode: Clutter.AnimationMode.EASE_IN_OUT_CUBIC, onComplete: done,
             });
             return;
         case 'blur':
