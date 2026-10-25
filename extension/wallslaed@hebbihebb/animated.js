@@ -33,6 +33,8 @@ export class AnimatedHost {
         this._settings = settings;
         this._daemon = daemon;
         this._player = null;
+        // Players told to quit that haven't exited yet.
+        this._retiring = new Set();
         this._clones = new Map(); // monitor index -> Clutter.Clone
         this._bgSignals = [];
         this._signals = [];
@@ -68,9 +70,9 @@ export class AnimatedHost {
         this._sync();
     }
 
-    _owns(window) {
+    _owns(window, player = this._player) {
         try {
-            return !!this._player?.client.owns_window(window);
+            return !!player?.client.owns_window(window);
         } catch {
             return false;
         }
@@ -114,12 +116,23 @@ export class AnimatedHost {
         const player = {
             file, client, proc,
             stdin: proc.get_stdin_pipe(),
+            queue: [],
+            writing: false,
+            closing: false,
+            exited: false,
             actors: new Map(), // monitor index -> Meta.WindowActor
             windowSignals: [],
         };
         this._player = player;
         this._paused = false;
-        proc.wait_async(null, () => {
+        proc.wait_async(null, (p, res) => {
+            try {
+                p.wait_finish(res);
+            } catch {
+                // Exited either way.
+            }
+            player.exited = true;
+            this._retiring.delete(player);
             if (this._player === player)
                 this._stop();
         });
@@ -135,32 +148,71 @@ export class AnimatedHost {
             return;
         for (const [obj, id] of player.windowSignals)
             obj.disconnect(id);
+        player.windowSignals = [];
+        // The player quits on 'quit' or end of input, and exits by itself within
+        // two seconds even if something hangs, so there is nothing to time here.
+        player.closing = true;
         this._send(player, 'quit');
-        // If it doesn't leave on its own, make it.
-        const proc = player.proc;
-        GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 2, () => {
-            if (!proc.get_if_exited() && !proc.get_if_signaled())
-                proc.force_exit();
-            return GLib.SOURCE_REMOVE;
-        });
+        if (!player.exited)
+            this._retiring.add(player);
     }
 
+    // GIO allows one pending write per stream, so commands go out one at a
+    // time, in order. Once a closing player's queue drains, stdin is closed.
     _send(player, command) {
-        const bytes = new GLib.Bytes(new TextEncoder().encode(`${command}\n`));
-        player.stdin.write_bytes_async(bytes, GLib.PRIORITY_DEFAULT, null, (stream, res) => {
-            try {
-                stream.write_bytes_finish(res);
-            } catch {
-                // Player already gone.
+        if (player.exited)
+            return;
+        player.queue.push(command);
+        if (!player.writing)
+            this._flush(player);
+    }
+
+    _flush(player) {
+        const command = player.queue.shift();
+        if (command === undefined) {
+            player.writing = false;
+            if (player.closing) {
+                player.stdin.close_async(GLib.PRIORITY_DEFAULT, null, (stream, res) => {
+                    try {
+                        stream.close_finish(res);
+                    } catch {
+                        // Already gone.
+                    }
+                });
             }
+            return;
+        }
+        player.writing = true;
+        const bytes = new TextEncoder().encode(`${command}\n`);
+        player.stdin.write_all_async(bytes, GLib.PRIORITY_DEFAULT, null, (stream, res) => {
+            try {
+                stream.write_all_finish(res);
+            } catch (e) {
+                if (!e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.BROKEN_PIPE) &&
+                    !e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CLOSED))
+                    console.warn(`Wallslæd: player command failed: ${e.message}`);
+                player.queue = [];
+                player.writing = false;
+                return;
+            }
+            this._flush(player);
         });
     }
 
     _onMap(actor) {
         const player = this._player;
         const window = actor.meta_window;
-        if (!player || !this._owns(window))
+        if (!player || !this._owns(window)) {
+            // A player on its way out may still map a window; never show it.
+            for (const old of this._retiring) {
+                if (this._owns(window, old)) {
+                    actor.opacity = 0;
+                    window.minimize();
+                    break;
+                }
+            }
             return;
+        }
 
         const index = parseInt(window.title?.slice(TITLE_PREFIX.length) ?? '', 10);
         if (Number.isNaN(index))
@@ -262,8 +314,9 @@ export class AnimatedHost {
         for (const w of workspace.list_windows()) {
             if (w.minimized || !w.showing_on_its_workspace() || this._owns(w))
                 continue;
-            if (w.is_fullscreen() || w.is_maximized())
-                covered[w.get_monitor()] = true;
+            const m = w.get_monitor();
+            if (m >= 0 && m < n && (w.is_fullscreen() || w.is_maximized()))
+                covered[m] = true;
         }
         return covered.every(Boolean);
     }
@@ -273,6 +326,7 @@ export class AnimatedHost {
             GLib.source_remove(this._checkId);
         this._checkId = 0;
         this._stop();
+        this._retiring.clear();
         for (const [obj, id] of this._signals)
             obj.disconnect(id);
         this._signals = [];
