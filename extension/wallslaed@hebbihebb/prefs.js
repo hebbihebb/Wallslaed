@@ -5,6 +5,9 @@ import Gtk from 'gi://Gtk';
 
 import {ExtensionPreferences, gettext as _} from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 
+import {browsePage} from './prefsBrowse.js';
+import {musicPage} from './prefsMusic.js';
+
 // A function, because gettext only works once the preferences are loading.
 const transitions = () => [
     ['none', _('None')],
@@ -29,10 +32,12 @@ export default class WallslaedPreferences extends ExtensionPreferences {
     fillPreferencesWindow(window) {
         const settings = this.getSettings();
         window._settings = settings;
-        window.set_default_size(560, 720);
+        window.set_default_size(640, 760);
 
-        const page = new Adw.PreferencesPage();
+        const page = new Adw.PreferencesPage({title: _('Wallpapers'), icon_name: 'preferences-desktop-wallpaper-symbolic'});
         window.add(page);
+        window.add(musicPage(window, settings));
+        window.add(browsePage(window, settings));
 
         // Wallpapers
         const library = new Adw.PreferencesGroup({title: _('Wallpapers')});

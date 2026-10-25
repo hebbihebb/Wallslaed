@@ -1,37 +1,12 @@
 // Thin client for the wallslaed daemon's D-Bus API.
 
 import Gio from 'gi://Gio';
-import GLib from 'gi://GLib';
 
 import * as Signals from 'resource:///org/gnome/shell/misc/signals.js';
 
-const BUS_NAME = 'io.github.hebbihebb.Wallslaed';
-const OBJECT_PATH = '/io/github/hebbihebb/Wallslaed';
-
-const IFACE_XML = `
-<node>
-  <interface name="io.github.hebbihebb.Wallslaed">
-    <method name="Next"/>
-    <method name="Previous"/>
-    <method name="SetPaused"><arg type="b" name="paused" direction="in"/></method>
-    <method name="TogglePause"/>
-    <method name="ToggleFavorite"/>
-    <method name="Ban"/>
-    <method name="Rescan"/>
-    <method name="ShowInFiles"/>
-    <method name="GetState"><arg type="a{sv}" name="state" direction="out"/></method>
-    <signal name="Changed"><arg type="a{sv}" name="state"/></signal>
-  </interface>
-</node>`;
+import {BUS_NAME, IFACE_XML, OBJECT_PATH, unpack} from './iface.js';
 
 const WallslaedProxy = Gio.DBusProxy.makeProxyWrapper(IFACE_XML);
-
-function unpack(dict) {
-    const out = {};
-    for (const [k, v] of Object.entries(dict))
-        out[k] = v instanceof GLib.Variant ? v.recursiveUnpack() : v;
-    return out;
-}
 
 /**
  * Emits 'changed' whenever the daemon's state changes or it appears/vanishes.
@@ -79,8 +54,15 @@ export class DaemonClient extends Signals.EventEmitter {
     }
 
     call(method, ...args) {
-        this._proxy?.[`${method}Async`](...args)
+        this.request(method, ...args)
             .catch(e => console.warn(`Wallslæd: ${method} failed: ${e.message}`));
+    }
+
+    /** Like call(), but returns the reply (an array of out arguments). */
+    request(method, ...args) {
+        if (!this._proxy)
+            return Promise.reject(new Error('client destroyed'));
+        return this._proxy[`${method}Async`](...args);
     }
 
     destroy() {

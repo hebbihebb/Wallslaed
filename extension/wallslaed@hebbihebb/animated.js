@@ -2,7 +2,8 @@
 // per monitor; we keep those windows minimized and out of every window list,
 // and show them through clones inside the desktop background actors. The player
 // only runs while an animated wallpaper is current, and it gets paused whenever
-// nobody can see it.
+// nobody can see it. Music videos are the exception: they play with sound, and
+// only the user pauses them.
 
 import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
@@ -10,6 +11,7 @@ import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import * as Signals from 'resource:///org/gnome/shell/misc/signals.js';
 
 const TITLE_PREFIX = 'wallslaed-player-';
 
@@ -28,8 +30,13 @@ function playerPath() {
     return GLib.find_program_in_path('wallslaed-player');
 }
 
-export class AnimatedHost {
+/**
+ * Emits 'media-changed' when a music video starts, stops, or its play/mute
+ * state changes. `media` is {playing, muted} while one plays, null otherwise.
+ */
+export class AnimatedHost extends Signals.EventEmitter {
     constructor(settings, daemon) {
+        super();
         this._settings = settings;
         this._daemon = daemon;
         this._player = null;
@@ -40,6 +47,7 @@ export class AnimatedHost {
         this._signals = [];
         this._checkId = 0;
         this._paused = false;
+        this.media = null;
 
         const on = (obj, signal, fn) => this._signals.push([obj, obj.connect(signal, fn)]);
         const check = () => this._queueCheck();
@@ -48,6 +56,8 @@ export class AnimatedHost {
         on(settings, 'changed', (_s, key) => {
             if (key === 'animated-enabled')
                 this._sync();
+            else if (key === 'music-volume')
+                this._sendVolume();
             else if (key.startsWith('animated-'))
                 check();
         });
@@ -70,6 +80,12 @@ export class AnimatedHost {
         this._sync();
     }
 
+    /** Send a playback command (play, pause, toggle, mute, unmute) to a music video. */
+    control(command) {
+        if (this._player?.audio)
+            this._send(this._player, command);
+    }
+
     _owns(window, player = this._player) {
         try {
             return !!player?.client.owns_window(window);
@@ -80,21 +96,22 @@ export class AnimatedHost {
 
     _sync() {
         const state = this._daemon.state;
-        if (state?.animated && state.playable && this._settings.get_boolean('animated-enabled'))
-            this._start(state.playable);
+        if (state?.audio && state.playable)
+            this._start(state.playable, state);
+        else if (state?.animated && state.playable && this._settings.get_boolean('animated-enabled'))
+            this._start(state.playable, null);
         else
             this._stop();
     }
 
     _restart() {
-        const file = this._player?.file;
         this._stop();
-        if (file)
-            this._start(file);
+        this._sync();
     }
 
-    _start(file) {
-        if (this._player?.file === file)
+    _start(file, media) {
+        const audio = !!media;
+        if (this._player?.file === file && this._player.audio === audio)
             return;
         this._stop();
 
@@ -103,23 +120,34 @@ export class AnimatedHost {
             console.warn('Wallslæd: wallslaed-player not found; showing a still frame');
             return;
         }
+        const argv = [path, file];
+        if (audio) {
+            argv.push('--audio', '--start', String(media['media-position'] ?? 0));
+            if (media['media-title'])
+                argv.push('--title', media['media-title']);
+            if (media['media-art'])
+                argv.push('--art', media['media-art']);
+        }
 
-        const launcher = new Gio.SubprocessLauncher({flags: Gio.SubprocessFlags.STDIN_PIPE});
+        const launcher = new Gio.SubprocessLauncher({
+            flags: Gio.SubprocessFlags.STDIN_PIPE | Gio.SubprocessFlags.STDOUT_PIPE,
+        });
         let client;
         try {
-            client = Meta.WaylandClient.new_subprocess(global.context, launcher, [path, file]);
+            client = Meta.WaylandClient.new_subprocess(global.context, launcher, argv);
         } catch (e) {
             console.warn(`Wallslæd: could not start player: ${e.message}`);
             return;
         }
         const proc = client.get_subprocess();
         const player = {
-            file, client, proc,
+            file, audio, client, proc,
             stdin: proc.get_stdin_pipe(),
             queue: [],
             writing: false,
             closing: false,
             exited: false,
+            cancellable: new Gio.Cancellable(),
             actors: new Map(), // monitor index -> Meta.WindowActor
             windowSignals: [],
         };
@@ -136,6 +164,12 @@ export class AnimatedHost {
             if (this._player === player)
                 this._stop();
         });
+        this._readState(player, new Gio.DataInputStream({base_stream: proc.get_stdout_pipe()}));
+        if (audio) {
+            this.media = {playing: true, muted: false};
+            this._sendVolume();
+            this.emit('media-changed');
+        }
         this._watchBackgrounds();
     }
 
@@ -144,17 +178,26 @@ export class AnimatedHost {
         this._player = null;
         this._detachClones();
         this._unwatchBackgrounds();
+        if (this.media) {
+            this.media = null;
+            this.emit('media-changed');
+        }
         if (!player)
             return;
         for (const [obj, id] of player.windowSignals)
             obj.disconnect(id);
         player.windowSignals = [];
+        player.cancellable.cancel();
         // The player quits on 'quit' or end of input, and exits by itself within
         // two seconds even if something hangs, so there is nothing to time here.
         player.closing = true;
         this._send(player, 'quit');
         if (!player.exited)
             this._retiring.add(player);
+    }
+
+    _sendVolume() {
+        this.control(`volume ${this._settings.get_double('music-volume')}`);
     }
 
     // GIO allows one pending write per stream, so commands go out one at a
@@ -196,6 +239,26 @@ export class AnimatedHost {
                 return;
             }
             this._flush(player);
+        });
+    }
+
+    // The player reports "state <playing|paused> <muted 0|1>" on every change.
+    _readState(player, input) {
+        input.read_line_async(GLib.PRIORITY_DEFAULT, player.cancellable, (stream, res) => {
+            let line;
+            try {
+                [line] = stream.read_line_finish_utf8(res);
+            } catch {
+                return; // Cancelled, or the player is gone.
+            }
+            if (line === null)
+                return;
+            const [word, playState, muted] = line.trim().split(' ');
+            if (word === 'state' && player.audio && this._player === player) {
+                this.media = {playing: playState === 'playing', muted: muted === '1'};
+                this.emit('media-changed');
+            }
+            this._readState(player, stream);
         });
     }
 
@@ -294,7 +357,8 @@ export class AnimatedHost {
     }
 
     _updatePlayback() {
-        if (!this._player)
+        // Music videos keep playing behind windows; the user pauses them.
+        if (!this._player || this._player.audio)
             return;
         const onBattery = this._settings.get_boolean('animated-pause-on-battery') &&
             this._upower?.OnBattery === true;
