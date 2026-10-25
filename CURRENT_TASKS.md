@@ -1,10 +1,14 @@
 # Current Tasks
 
-Last updated: 2026-10-25.
+Last updated: 2026-10-25 (deployed for testing).
 
 ## Git state
 
-Branch `main`, last commit `ad30b95`. Everything below is **uncommitted** in the working tree and not yet on a feature branch. Nothing is installed in the live session: the running daemon, player and extension are still the `ad30b95` build.
+- `main` (`ad30b95`): the build the user accepted on 2026-10-25.
+- `fix/audit-findings`: `main` plus only the audit fixes. Verified in an isolated headless shell. This is the fallback if the music video work is not wanted.
+- `feature/music-videos` (active): built on `fix/audit-findings`; adds music videos, media controls and the wallpaper browser.
+- Backup of the accepted installed build: `~/.local/share/wallslaed-backups/installed-2026-10-25/` (binaries, extension, schema, service, state); `restore.sh` there puts it back.
+- Nothing is pushed.
 
 ## In progress: music videos, media controls, wallpaper browser
 
@@ -19,12 +23,12 @@ Plan: music videos downloaded with yt-dlp play as the wallpaper with sound, outs
 | Accurate seeking, `--js-runtimes node`, systemd-scope fallback | implemented, verified except a real YouTube download |
 | README | **not updated** for the new features |
 
-## Audit (`AUDIT.md`, Codex, 2026-10-25)
+## Audit (Codex, 2026-10-25)
 
-All seven findings (F1–F7) are fixed in the working tree, plus cheap guards for U3–U5. F1 is verified by test; F7 was not verified, because that test run was spoiled by the settings leak. The user did not review the findings one by one before the fixes (the audit process in `AGENTS.md` came later). Delete `AUDIT.md` before this work reaches `main`.
+All seven findings (F1–F7) and guards for U3–U5 are fixed on `fix/audit-findings`, one commit per group; the report was committed there and then removed, so it never reaches `main`. The user accepted the installed build and asked for it "with patches" as the fallback.
 
 ## Next
 
-1. Ask the user whether to commit this work to a `feature/music-videos` branch.
-2. With approval: `./install.sh`, then the user logs out and in, and tries the desktop menu, both preference pages, and one real download.
-3. Update `README.md`, then merge once the user accepts.
+1. Deployed `feature/music-videos` for testing on 2026-10-25 (`./install.sh`); the user logs out and in to load the new extension, then tries the desktop menu, both preference pages, and one real download.
+2. If accepted: update `README.md`, merge `fix/audit-findings` and then `feature/music-videos` into `main`.
+3. If not: `git switch fix/audit-findings && ./install.sh` for the patched accepted build, or `restore.sh` in the backup for the exact old one.
