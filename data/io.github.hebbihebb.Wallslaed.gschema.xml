@@ -116,5 +116,17 @@
       <default>true</default>
       <summary>Make the dash see-through over the blurred overview</summary>
     </key>
+    <key name="blur-popups" type="b">
+      <default>true</default>
+      <summary>Blur behind menus, quick settings, notifications, dialogs and the window switcher</summary>
+    </key>
+    <key name="blur-app-folders" type="b">
+      <default>true</default>
+      <summary>Blur behind open app folders</summary>
+    </key>
+    <key name="blur-screenshot" type="b">
+      <default>true</default>
+      <summary>Blur behind the screenshot tool's panel</summary>
+    </key>
   </schema>
 </schemalist>

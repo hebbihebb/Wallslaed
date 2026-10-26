@@ -43,3 +43,28 @@
 .wallslaed-blur-overview .page-navigation-arrow {
     background-color: rgba(255, 255, 255, 0.07);
 }
+
+/* Popups with live blur behind them (liveBlur.js): their own background
+   turns into a tint, which also does the darkening. */
+.popup-menu-content.wallslaed-blur-surface,
+.candidate-popup-content.wallslaed-blur-surface,
+.modal-dialog.wallslaed-blur-surface,
+.screenshot-ui-panel.wallslaed-blur-surface {
+    background-color: rgba(30, 30, 33, 0.6);
+    border-color: rgba(255, 255, 255, 0.06);
+}
+
+.quick-settings.wallslaed-blur-surface,
+.osd-window.wallslaed-blur-surface,
+.switcher-list.wallslaed-blur-surface {
+    background-color: rgba(30, 30, 33, 0.6);
+}
+
+.notification-banner.wallslaed-blur-surface,
+.message.wallslaed-blur-surface {
+    background-color: rgba(54, 54, 58, 0.6);
+}
+
+.app-folder-dialog.wallslaed-blur-surface {
+    background-color: rgba(30, 30, 33, 0.5);
+}
