@@ -1,9 +1,14 @@
 // Transition effects between wallpapers. Effects are attached to the outgoing
 // background only for the length of the transition and removed afterwards, so
 // they cost nothing while the desktop is idle.
+//
+// A shader's first use in a session compiles it, a 40-130 ms freeze on the
+// transition's first frame. So the effect the next change will play is drawn
+// once on a tiny hidden actor beforehand, a few seconds after the last change.
 
 import Clutter from 'gi://Clutter';
 import Cogl from 'gi://Cogl';
+import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
 import Shell from 'gi://Shell';
 import St from 'gi://St';
@@ -15,6 +20,14 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 // (removed) falls through to the crossfade.
 const EFFECTS = ['fade', 'zoom', 'pixelate', 'wipe', 'blur', 'tilt', 'burn',
     'freeze', 'shatter', 'ripple', 'melt', 'leak'];
+
+// Blur: the outgoing wallpaper fades through these fixed blurs. Each is
+// computed once and cached by Clutter; animating the radius itself redid the
+// whole blur every frame (twice the CPU of a crossfade).
+const BLUR_LEVELS = [24, 64];
+
+// How long after a change (or enabling) the next effect is warmed up.
+const PREWARM_DELAY_S = 3;
 
 // Shared by every shader. `seed` (0..1) varies each transition. Lengths are in
 // screen heights (`wsl_q`), so effects look the same at any resolution, and
@@ -297,6 +310,12 @@ export class Transitions {
         // Monitors showing the same picture share one Background; remember
         // the last one so they all play the same effect.
         this._picked = null;
+        // The effect Random plays next, chosen ahead so it can be warmed up.
+        this._nextRandom = null;
+        this._warm = new Set(); // effects drawn once in this session
+        this._prewarmId = 0;
+        this._prewarmActor = null;
+        this._schedulePrewarm();
 
         const self = this;
         // Same as GNOME's own _swapBackgroundActor, with a choice of effect
@@ -331,8 +350,10 @@ export class Transitions {
         if (this._picked?.background === background)
             return this._picked.name;
         let name = this._settings.get_string('transition');
-        if (name === 'random')
-            name = EFFECTS[Math.floor(Math.random() * EFFECTS.length)];
+        if (name === 'random') {
+            name = this._nextRandom ?? EFFECTS[Math.floor(Math.random() * EFFECTS.length)];
+            this._nextRandom = null;
+        }
         // Reduced motion keeps a transition, just not a moving one.
         if (name !== 'none' && St.Settings.get().reduced_motion === St.ReducedMotion.REDUCE)
             name = 'fade';
@@ -354,6 +375,7 @@ export class Transitions {
                 this._running.delete(manager);
         });
         const done = () => actor.destroy();
+        actor.connect('destroy', () => this._schedulePrewarm());
 
         // The outgoing wallpaper stays on top while it fades. Let clicks reach
         // the new one underneath, so a right-click never opens a menu that is
@@ -370,12 +392,7 @@ export class Transitions {
             });
             return;
         case 'blur':
-            this._animate(actor, duration,
-                new Shell.BlurEffect({mode: Shell.BlurMode.ACTOR, radius: 0, brightness: 1}),
-                (effect, p) => {
-                    effect.radius = p * 64;
-                    actor.opacity = 255 * (1 - p);
-                });
+            this._blur(actor, duration);
             return;
         default:
             if (ShaderEffects[name]) {
@@ -389,6 +406,99 @@ export class Transitions {
                 mode: Clutter.AnimationMode.EASE_OUT_QUAD, onComplete: done,
             });
         }
+    }
+
+    // The outgoing wallpaper, sharp, then each blur level in turn, fading out
+    // as a whole. Every layer is a clone of the unchanging outgoing actor
+    // inside a holder, so its blur is computed once; only the holders'
+    // opacities change. Two adjacent layers show at a time, with opacities
+    // that make them fade out together exactly, without drawing them
+    // offscreen first (one more screen-sized buffer).
+    _blur(actor, duration) {
+        const group = new Clutter.Actor({x: actor.x, y: actor.y, reactive: false});
+        const layers = [0, ...BLUR_LEVELS].map(radius => {
+            const holder = new Clutter.Actor({opacity: 0});
+            const clone = new Clutter.Clone({source: actor, width: actor.width, height: actor.height});
+            if (radius)
+                clone.add_effect(new Shell.BlurEffect({mode: Shell.BlurMode.ACTOR, radius, brightness: 1}));
+            holder.add_child(clone);
+            group.add_child(holder);
+            return holder;
+        });
+        actor.get_parent().insert_child_above(group, actor);
+        // Only its clones are seen from here on.
+        actor.opacity = 0;
+        actor.connect('destroy', () => group.destroy());
+
+        const timeline = new Clutter.Timeline({actor: group, duration});
+        timeline.set_progress_mode(Clutter.AnimationMode.EASE_IN_OUT_QUAD);
+        const step = p => {
+            // Lower layer k blends into k + 1 by f; the pair fades to 1 - a.
+            const t = p * (layers.length - 1);
+            const k = Math.min(Math.floor(t), layers.length - 2);
+            const f = t - k, a = 1 - p;
+            const upper = a * f;
+            const lower = upper < 1 ? a * (1 - f) / (1 - upper) : 0;
+            layers.forEach((holder, i) => {
+                const o = i === k ? lower : i === k + 1 ? upper : 0;
+                holder.opacity = Math.round(255 * Math.min(1, Math.max(0, o)));
+            });
+        };
+        timeline.connect('new-frame', () => step(timeline.get_progress()));
+        timeline.connect('completed', () => actor.destroy());
+        actor.connect('destroy', () => timeline.stop());
+        step(0);
+        timeline.start();
+    }
+
+    // Draw the effect the next change will play once, on a tiny actor under
+    // the wallpaper, so its shader is compiled before it is needed.
+    _schedulePrewarm() {
+        if (this._prewarmId)
+            GLib.source_remove(this._prewarmId);
+        this._prewarmId = GLib.timeout_add_seconds(GLib.PRIORITY_LOW, PREWARM_DELAY_S, () => {
+            this._prewarmId = 0;
+            this._prewarm();
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
+    _prewarm() {
+        let name = this._settings.get_string('transition');
+        if (name === 'random')
+            name = this._nextRandom ??= EFFECTS[Math.floor(Math.random() * EFFECTS.length)];
+        if (this._warm.has(name) || this._running.size || this._prewarmActor)
+            return;
+        let effects;
+        if (ShaderEffects[name])
+            effects = [new ShaderEffects[name]()];
+        else if (name === 'blur')
+            effects = BLUR_LEVELS.map(radius => new Shell.BlurEffect({mode: Shell.BlurMode.ACTOR, radius, brightness: 1}));
+        else
+            return; // nothing to compile
+        const group = Main.layoutManager._backgroundGroup;
+        const actor = new Clutter.Actor({width: 16, height: 16, background_color: new Cogl.Color({red: 0, green: 0, blue: 0, alpha: 255})});
+        // Under the wallpapers: drawn, never seen.
+        group.insert_child_at_index(actor, 0);
+        for (const effect of effects) {
+            actor.add_effect(effect);
+            effect.setup?.(16, 16);
+        }
+        this._prewarmActor = actor;
+        const id = global.stage.connect('after-paint', () => {
+            global.stage.disconnect(id);
+            this._warm.add(name);
+            if (this._prewarmActor === actor)
+                this._prewarmActor = null;
+            actor.destroy();
+        });
+        actor.connect('destroy', () => {
+            if (this._prewarmActor === actor) {
+                global.stage.disconnect(id);
+                this._prewarmActor = null;
+            }
+        });
+        actor.queue_redraw();
     }
 
     // `init` runs once the effect is attached, before the first step.
@@ -410,5 +520,10 @@ export class Transitions {
             actor.destroy();
         this._running.clear();
         this._picked = null;
+        // After the transitions: finishing one schedules a warm-up.
+        if (this._prewarmId)
+            GLib.source_remove(this._prewarmId);
+        this._prewarmId = 0;
+        this._prewarmActor?.destroy();
     }
 }
