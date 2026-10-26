@@ -5,10 +5,10 @@ Last updated: 2026-10-26 (Random uses every effect; desktop menu opens Wallslæd
 ## Git state
 
 - `main`: accepted work, including the menu race fix and the new transitions (merged 2026-10-25), pushed to `origin`.
-- `fix/random-and-settings` (2026-10-26): off `main`, see below. Not merged, not installed.
+- `fix/random-and-settings` (2026-10-26): off `main`, see below. Not merged; installed.
 - `feature/shell-blur`: shelved until the user has time to test it properly; see "Shelved" below. Not merged.
-- Installed in the live session: `main` (`480b01e`). The user restored it 2026-10-26 after trying the shell-blur build.
-- Backups: `~/.local/share/wallslaed-backups/installed-transitions-2026-10-25/`, `installed-main-761c5ae/` (the build before the new transitions) and `installed-2026-10-25/` (before the menu race fix); each has a `restore.sh`.
+- Installed in the live session: `fix/random-and-settings` (`5a7d4ac`), installed 2026-10-26; the extension takes effect after logging out and back in. Before that, the user had restored `main` (`480b01e`) after trying the shell-blur build.
+- Backups: `~/.local/share/wallslaed-backups/installed-main-480b01e/` (the build before this fix), `installed-transitions-2026-10-25/`, `installed-main-761c5ae/` (the build before the new transitions) and `installed-2026-10-25/` (before the menu race fix); each has a `restore.sh`.
 
 ## In progress: `fix/random-and-settings` (2026-10-26)
 
