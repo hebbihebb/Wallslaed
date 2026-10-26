@@ -5,6 +5,7 @@ import Gtk from 'gi://Gtk';
 
 import {ExtensionPreferences, gettext as _} from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 
+import {appearancePage} from './prefsAppearance.js';
 import {browsePage} from './prefsBrowse.js';
 import {musicPage} from './prefsMusic.js';
 
@@ -41,6 +42,7 @@ export default class WallslaedPreferences extends ExtensionPreferences {
 
         const page = new Adw.PreferencesPage({title: _('Wallpapers'), icon_name: 'preferences-desktop-wallpaper-symbolic'});
         window.add(page);
+        window.add(appearancePage(window, settings));
         window.add(musicPage(window, settings));
         window.add(browsePage(window, settings));
 
