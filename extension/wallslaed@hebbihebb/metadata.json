@@ -3,6 +3,7 @@
   "name": "Wallslæd",
   "description": "Desktop menu, transitions and animated wallpapers for the Wallslæd wallpaper daemon.",
   "shell-version": ["50"],
+  "session-modes": ["user", "unlock-dialog"],
   "settings-schema": "io.github.hebbihebb.Wallslaed",
   "version-name": "0.1.0",
   "url": "https://github.com/hebbihebb/Wallslaed"

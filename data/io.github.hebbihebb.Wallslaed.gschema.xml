@@ -128,6 +128,11 @@
       <default>true</default>
       <summary>Blur behind the screenshot tool's panel</summary>
     </key>
+    <key name="blur-lockscreen" type="b">
+      <default>true</default>
+      <summary>Make the lock screen's blur follow the blur strength and brightness</summary>
+      <description>GNOME blurs the lock screen either way; off leaves its own look.</description>
+    </key>
     <key name="topbar-autohide" type="b">
       <default>true</default>
       <summary>Hide the top bar while a window of the focused app overlaps it</summary>

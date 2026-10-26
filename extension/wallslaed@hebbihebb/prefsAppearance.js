@@ -48,6 +48,7 @@ export function appearancePage(window, settings) {
         ['blur-popups', _('Menus and Popups'), _('Panel menus, quick settings, notifications, dialogs, the window switcher')],
         ['blur-app-folders', _('App Folders')],
         ['blur-screenshot', _('Screenshot Tool')],
+        ['blur-lockscreen', _('Match the Lock Screen'), _('GNOME blurs the lock screen either way; this gives it the strength and brightness above')],
     ]);
 
     const topBar = new Adw.PreferencesGroup({title: _('Top Bar')});
