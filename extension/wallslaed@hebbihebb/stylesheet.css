@@ -74,7 +74,9 @@
 }
 
 /* Popups with live blur behind them (liveBlur.js): their own background
-   turns into a tint, which also does the darkening. */
+   turns into a tint, which also does the darkening (it follows the rounded
+   corners; the blur is square). These alphas are for the default brightness,
+   0.6; liveBlur.js scales them for other settings. */
 .popup-menu-content.wallslaed-blur-surface,
 .candidate-popup-content.wallslaed-blur-surface,
 .modal-dialog.wallslaed-blur-surface,

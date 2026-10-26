@@ -6,9 +6,23 @@
 //
 // The blur sits in a sibling actor just below the popup, not inside it: menus
 // draw themselves offscreen, where a background blur would see nothing.
+//
+// GNOME's background blur copies exactly its own rectangle of the screen and
+// blurs that. When only part of a popup is redrawn (an item hovered), the rest
+// of the rectangle still holds last frame's picture, popup and blur included,
+// and blurring that left boxes that stayed until a full redraw. So:
+// - while a popup is in use (pointer or keys inside it, and ACTIVE_US after),
+//   every frame redraws its whole rectangle. A redraw queued at the stage's
+//   before-update joins that same frame; it also schedules one more, which is
+//   why this only runs for a moment and not all the time;
+// - any other frame that redraws only part of a rectangle (a window changing
+//   under the popup) has the whole of it redrawn on the next frame, and
+//   starts the same moment.
 
 import Clutter from 'gi://Clutter';
+import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
+import Mtk from 'gi://Mtk';
 import Shell from 'gi://Shell';
 import St from 'gi://St';
 
@@ -24,23 +38,33 @@ import * as SwitcherPopup from 'resource:///org/gnome/shell/ui/switcherPopup.js'
 const SURFACE_CLASS = 'wallslaed-blur-surface';
 // Properties that move or fade a popup.
 const TRACKED = ['allocation', 'translation-x', 'translation-y', 'scale-x', 'scale-y', 'opacity', 'visible'];
-// GNOME's blur is rectangular. These rectangles, given as insets in units of
-// the corner radius, make an octagon that fits inside the rounded corners and
-// leaves at most ~8% of the radius unblurred there.
-const SHAPE = [[1, 0], [0, 1], [1 - Math.SQRT1_2, 1 - Math.SQRT1_2]];
+// Which setting each kind of surface follows.
+const CATEGORY_KEYS = {popups: 'blur-popups', folders: 'blur-app-folders', screenshot: 'blur-screenshot'};
+// How long after the last activity whole rectangles keep being redrawn: a bit
+// longer than GNOME's hover and press transitions.
+const ACTIVE_US = 300 * 1000;
+// The brightness the stylesheet's tints are made for.
+const STYLESHEET_BRIGHTNESS = 0.6;
 
 export class LiveBlur {
     constructor(settings, injections) {
         this._settings = settings;
         this._blurs = new Map(); // target -> Blur
         this._signals = [];
+        this._frameIds = []; // stage signals, while any blur is up
+        this._activeUntil = 0; // monotonic µs
+        this._destroyed = false;
 
         const self = this;
-        // Run `attach` after the original method, or after its promise.
+        // Run `attach` after the original method, or after its promise. A
+        // promise can settle after this has been destroyed (on disable or
+        // lock): then it does nothing.
         const after = (proto, name, attach) => {
             injections.overrideMethod(proto, name, original => function (...args) {
                 const result = original.apply(this, args);
                 const run = () => {
+                    if (self._destroyed)
+                        return;
                     try {
                         attach(this);
                     } catch (e) {
@@ -60,31 +84,32 @@ export class LiveBlur {
         // context menus all open through a BoxPointer.
         after(BoxPointer.BoxPointer.prototype, 'open', box => {
             if (popups())
-                self._attach(box, box.bin.get_child() ?? box.bin);
+                self._attach('popups', box, box.bin.get_child() ?? box.bin);
         });
         after(ModalDialog.ModalDialog.prototype, 'open', dialog => {
             if (popups())
-                self._attach(dialog, dialog.dialogLayout._dialog ?? dialog.dialogLayout);
+                self._attach('popups', dialog, dialog.dialogLayout._dialog ?? dialog.dialogLayout);
         });
         after(SwitcherPopup.SwitcherPopup.prototype, '_showImmediately', popup => {
             if (popups() && popup._switcherList)
-                self._attach(popup, popup._switcherList);
+                self._attach('popups', popup, popup._switcherList);
         });
         after(OsdWindow.OsdWindow.prototype, 'show', osd => {
             if (popups() && osd.visible && osd._hbox)
-                self._attach(osd, osd._hbox);
+                self._attach('popups', osd, osd._hbox);
         });
         after(MessageTray.MessageTray.prototype, '_showNotification', tray => {
             if (popups() && tray._banner)
-                self._attach(tray._banner, tray._banner);
+                self._attach('popups', tray._banner, tray._banner);
         });
         after(AppDisplay.AppFolderDialog.prototype, 'popup', dialog => {
             if (this._settings.get_boolean('blur-app-folders') && dialog._isOpen)
-                self._attach(dialog, dialog._viewBox);
+                self._attach('folders', dialog, dialog._viewBox);
         });
+        // Opening is async; a close in between leaves it invisible.
         after(Screenshot.ScreenshotUI.prototype, 'open', ui => {
             if (this._settings.get_boolean('blur-screenshot') && ui._panel && ui.visible)
-                self._attach(childOf(ui, ui._panel), ui._panel);
+                self._attach('screenshot', childOf(ui, ui._panel), ui._panel);
         });
         // The screenshot UI hides itself, not the panel's container.
         after(Screenshot.ScreenshotUI.prototype, 'close', ui => {
@@ -92,16 +117,58 @@ export class LiveBlur {
                 self._blurs.get(ui._panel)?.destroy();
         });
 
+        // Open popups follow the look settings at once. A kind switched off
+        // loses its blur now; switched on, it applies from the next popup.
         this._signals.push([settings, settings.connect('changed', (_s, key) => {
-            if (key === 'blur-strength')
-                this._blurs.forEach(blur => blur.setRadius(this._radius()));
-            else if (key.startsWith('blur-'))
-                this._clear(); // Popups opened from now on follow the new setting.
+            if (key === 'blur-strength' || key === 'blur-brightness') {
+                this._blurs.forEach(blur => blur.setLook(this._look()));
+                return;
+            }
+            for (const blur of [...this._blurs.values()]) {
+                if (CATEGORY_KEYS[blur.category] === key && !settings.get_boolean(key))
+                    blur.destroy();
+            }
         })]);
     }
 
-    _radius() {
-        return this._settings.get_uint('blur-strength') * 2;
+    _look() {
+        return {
+            radius: this._settings.get_uint('blur-strength') * 2,
+            brightness: this._settings.get_double('blur-brightness'),
+        };
+    }
+
+    // See the comment at the top.
+    _syncFrameHook() {
+        const stage = global.stage;
+        if (this._blurs.size && !this._frameIds.length) {
+            this._frameIds = [
+                stage.connect('before-update', () => {
+                    if (GLib.get_monotonic_time() < this._activeUntil)
+                        this._redrawAll();
+                }),
+                // A null region means the whole view.
+                stage.connect('paint-view', (_stage, _view, region) => {
+                    if (region && [...this._blurs.values()].some(blur => blur.partlyIn(region))) {
+                        this._redrawAll();
+                        this._activate();
+                    }
+                }),
+            ];
+        } else if (!this._blurs.size && this._frameIds.length) {
+            this._frameIds.forEach(id => stage.disconnect(id));
+            this._frameIds = [];
+            this._activeUntil = 0;
+        }
+    }
+
+    _activate() {
+        this._activeUntil = GLib.get_monotonic_time() + ACTIVE_US;
+    }
+
+    _redrawAll() {
+        for (const blur of this._blurs.values())
+            blur.redraw();
     }
 
     /**
@@ -109,24 +176,29 @@ export class LiveBlur {
      * popup's container that holds `target`) stays visible. The blur goes
      * just below `root` in its parent.
      */
-    _attach(root, target) {
+    _attach(category, root, target) {
         if (this._blurs.has(target) || !root.get_parent())
             return;
-        const blur = new Blur(root, target, this._radius(), () => this._blurs.delete(target));
+        const blur = new Blur(category, root, target, this._look(), () => {
+            this._blurs.delete(target);
+            this._syncFrameHook();
+        }, () => {
+            this._activate();
+            this._redrawAll();
+        });
         this._blurs.set(target, blur);
-    }
-
-    _clear() {
-        for (const blur of [...this._blurs.values()])
-            blur.destroy();
-        this._blurs.clear();
+        this._syncFrameHook();
     }
 
     destroy() {
+        this._destroyed = true;
         for (const [obj, id] of this._signals)
             obj.disconnect(id);
         this._signals = [];
-        this._clear();
+        for (const blur of [...this._blurs.values()])
+            blur.destroy();
+        this._blurs.clear();
+        this._syncFrameHook();
     }
 }
 
@@ -139,7 +211,8 @@ function childOf(container, actor) {
 }
 
 class Blur {
-    constructor(root, target, radius, onDestroyed) {
+    constructor(category, root, target, look, onDestroyed, onActivity) {
+        this.category = category;
         this._root = root;
         this._target = target;
         this._onDestroyed = onDestroyed;
@@ -156,22 +229,21 @@ class Blur {
             x_expand: true,
             y_expand: true,
         });
-        this._parts = SHAPE.map(() => {
-            // An St.Widget: a bare actor has no paint volume, and the blur
-            // needs one to know what to cover.
-            const part = new St.Widget({reactive: false});
-            part.add_effect_with_name('blur', new Shell.BlurEffect({
-                mode: Shell.BlurMode.BACKGROUND,
-                radius,
-                // Overlapping parts would darken twice; the popup's own
-                // background tints instead.
-                brightness: 1,
-            }));
-            this._group.add_child(part);
-            return part;
-        });
+        // One rectangle, the popup's full size. Its square corners reach a
+        // little past the rounded ones, under the popup's shadow; smaller or
+        // stacked rectangles leave sharp bands or blur each other's output.
+        // An St.Widget: a bare actor has no paint volume, and the blur needs
+        // one to know what to cover.
+        this._part = new St.Widget({reactive: false});
+        // Full brightness: the popup's tint darkens, inside its rounded corners.
+        this._effect = new Shell.BlurEffect({mode: Shell.BlurMode.BACKGROUND, radius: look.radius, brightness: 1});
+        this._part.add_effect(this._effect);
+        this._group.add_child(this._part);
         parent.insert_child_below(this._group, root);
         target.add_style_class_name(SURFACE_CLASS);
+        this._style = target.style;
+        this._tint = target.get_theme_node().get_background_color();
+        this.setLook(look);
 
         // Watch everything between the popup and the target: any of them can
         // move, scale or fade it.
@@ -181,6 +253,12 @@ class Blur {
             if (a === root)
                 break;
         }
+        // Pointer and key events inside the popup come before the hover and
+        // press changes they cause.
+        this._signals.push([root, root.connect('captured-event', () => {
+            onActivity();
+            return Clutter.EVENT_PROPAGATE;
+        })]);
         this._signals.push([root, root.connect('destroy', () => this.destroy())]);
         this._signals.push([target, target.connect('destroy', () => {
             this._target = null;
@@ -200,9 +278,36 @@ class Blur {
         });
     }
 
-    setRadius(radius) {
-        for (const part of this._parts)
-            part.get_effect('blur').radius = radius;
+    // The tint's transparency scales with the brightness setting.
+    setLook({radius, brightness}) {
+        this._effect.radius = radius;
+        const {red, green, blue, alpha} = this._tint;
+        const clear = (1 - alpha / 255) * brightness / STYLESHEET_BRIGHTNESS;
+        const a = Math.min(1, Math.max(0, 1 - clear)).toFixed(3);
+        this._target.style = `${this._style ?? ''} background-color: rgba(${red}, ${green}, ${blue}, ${a});`;
+    }
+
+    redraw() {
+        if (!this._destroyed && this._part.mapped)
+            this._part.queue_redraw();
+    }
+
+    // Whether `region`, the stage area a frame redraws, covers only part of
+    // the blurred rectangle.
+    partlyIn(region) {
+        if (this._destroyed || !this._part.mapped)
+            return false;
+        // A pixel inside each edge, so rounding never makes a full redraw
+        // look partial.
+        const box = this._part.get_transformed_extents();
+        const x = Math.ceil(box.get_x()) + 1, y = Math.ceil(box.get_y()) + 1;
+        const rect = new Mtk.Rectangle({
+            x, y,
+            width: Math.floor(box.get_x() + box.get_width()) - 1 - x,
+            height: Math.floor(box.get_y() + box.get_height()) - 1 - y,
+        });
+        return rect.width > 0 && rect.height > 0 &&
+            region.contains_rectangle(rect) === Mtk.RegionOverlap.PART;
     }
 
     _update() {
@@ -232,20 +337,14 @@ class Blur {
         const x2 = x1 + extents.get_width(), y2 = y1 + extents.get_height();
 
         const [w, h] = [x2 - x1, y2 - y1];
-        const scale = this._target.width > 0 ? w / this._target.width : 1;
-        const node = this._target.get_theme_node();
-        const r = Math.min(node.get_border_radius(St.Corner.TOPLEFT) * scale, w / 2, h / 2);
         // Not laid out yet on the first frame.
-        if (![x1, y1, w, h, r].every(Number.isFinite) || w <= 0 || h <= 0) {
+        if (![x1, y1, w, h].every(Number.isFinite) || w <= 0 || h <= 0) {
             this._group.hide();
             return;
         }
         this._group.show();
-        this._parts.forEach((part, i) => {
-            const [ix, iy] = SHAPE[i].map(k => Math.ceil(k * r));
-            part.set_position(Math.round(x1) + ix, Math.round(y1) + iy);
-            part.set_size(Math.max(0, Math.round(w) - 2 * ix), Math.max(0, Math.round(h) - 2 * iy));
-        });
+        this._part.set_position(Math.round(x1), Math.round(y1));
+        this._part.set_size(Math.round(w), Math.round(h));
     }
 
     destroy() {
@@ -258,7 +357,10 @@ class Blur {
         for (const [obj, id] of this._signals)
             obj.disconnect(id);
         this._signals = [];
-        this._target?.remove_style_class_name(SURFACE_CLASS);
+        if (this._target) {
+            this._target.style = this._style;
+            this._target.remove_style_class_name(SURFACE_CLASS);
+        }
         this._group.destroy();
         this._onDestroyed();
     }
