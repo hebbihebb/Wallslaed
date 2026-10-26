@@ -1,19 +1,28 @@
 # Current Tasks
 
-Last updated: 2026-10-26 (shell blur installed for a live test; Codex performance audit next).
+Last updated: 2026-10-26 (`feature/fast-switch` merged into `main`, pushed and installed; top-right pointer report open).
 
 ## Git state
 
-- `main`: accepted work, including the Random/settings fix, the GNOME 51 port and the glycin conversion (merged 2026-10-26), pushed to `origin`.
+- `main`: accepted work, including the Random/settings fix, the GNOME 51 port, the glycin conversion and `feature/fast-switch` (shell blur, top bar, audit P-01..P-06; fast-forward 2026-10-26 on the user's request after a day of live use), pushed to `origin`.
 - `fix/random-and-settings`, `fix/gnome-51`, `feature/glycin-prepare`: merged into `main` (fast-forward) and pushed.
 - `feature/shell-blur`: resumed 2026-10-26 for GNOME 51, `main` merged in, all planned steps implemented and verified headless; see below. Pushed; installed 2026-10-26 for a live test. Not merged.
-- `feature/fast-switch`: P-01 from the Codex performance audit, branched from `feature/shell-blur`; see below. P-01 installed and accepted 2026-10-26; P-02 change (`ddc9958`) installed and accepted 2026-10-26. Pushed to `origin/feature/fast-switch` (includes the `feature/shell-blur` commits); not merged. Backups: `installed-fast-switch-603caca/` (before P-02), `installed-shell-blur-ebfca40/` (before preloading), both in `~/.local/share/wallslaed-backups/`.
+- `feature/fast-switch`, `feature/shell-blur`: merged into `main` 2026-10-26 and pushed; the branches can go once the user agrees.
+- (history) `feature/fast-switch`: P-01 from the Codex performance audit, branched from `feature/shell-blur`; see below. P-01 installed and accepted 2026-10-26; P-02 change (`ddc9958`) installed and accepted 2026-10-26. Pushed to `origin/feature/fast-switch` (includes the `feature/shell-blur` commits); not merged. Backups: `installed-fast-switch-603caca/` (before P-02), `installed-shell-blur-ebfca40/` (before preloading), both in `~/.local/share/wallslaed-backups/`.
 - `codex/perf-audit`: the Codex performance audit report (`bdb984d`, `AUDIT.md`), branched from `7f533a9`; keep until P-01..P-06 are decided.
 - `codex/audit-shell-blur`: deleted 2026-10-26 (all 14 findings fixed). Next: a Codex performance audit on `codex/perf-audit`; prompt in `.scratch/codex-perf-audit-prompt.md`.
-- Installed in the live session: `feature/shell-blur` (`9be4b8b`), installed 2026-10-26; extension takes effect after logging out and back in. Hide Top Bar was still enabled in the user's session at install time (conflicts with `topbar-autohide`), and the user's `blur-popups`, `blur-app-folders`, `blur-screenshot` were off.
+- Installed in the live session: `main` after the fast-switch merge, installed 2026-10-26; backup of the build it replaced (`26535fa`, P-03..P-06 without the corner fix): `~/.local/share/wallslaed-backups/installed-fast-switch-26535fa/`. Earlier: `feature/shell-blur` (`9be4b8b`), installed 2026-10-26; extension takes effect after logging out and back in. Hide Top Bar was still enabled in the user's session at install time (conflicts with `topbar-autohide`), and the user's `blur-popups`, `blur-app-folders`, `blur-screenshot` were off.
 - Backups: `~/.local/share/wallslaed-backups/installed-main-d77bfef/` (before the shell blur test), `installed-gnome51-bf0d962/` (before the glycin conversion), `installed-random-settings-5a7d4ac/` (the last GNOME 50 build), `installed-main-480b01e/` (the build before this fix), `installed-transitions-2026-10-25/`, `installed-main-761c5ae/` (the build before the new transitions) and `installed-2026-10-25/` (before the menu race fix); each has a `restore.sh`.
 
-## Implemented: audit P-03..P-06 (`feature/fast-switch`, 2026-10-26)
+## Open: pointer sticks at the top-right corner (user report, 2026-10-26)
+
+Like the earlier top-left report, weaker. Headless (`.scratch/corner-right/test.sh`): the edge barrier is hit and reveals the bar, but the pointer leaves the corner on the first move away, same as with no barrier; the top-left gap holds. Not reproduced. Guess: a brief stall when the reveal turns off unredirection over a maximized window (now full-screen without the strut). Asked the user: frozen or heavy, over which windows, also mid-edge, top-left still?
+
+## Merged: popup corners (`782e03d`, 2026-10-26)
+
+User report after a day of live use: rectangular blurred corners on popups and right-click menus, mainly the notification banner's bottom right with the dock visible, coming and going on wallpaper changes. Two causes: the baked blur (P-05) is already darkened and was square (now clipped to the popup's corner radius through its own `Meta.BackgroundContent`), and the banner's blur measured it mid pop-in inside the scaling `_bannerBin` and never again (now attached beside the bin, which is tracked). Verified headless (`.scratch/round-corners/test.sh`): blur equals the banner after pop-in on the desktop, after a wallpaper change and in the overview; rounded corners in screenshots; no JS errors.
+
+## Merged: audit P-03..P-06 (`feature/fast-switch`, 2026-10-26)
 
 The rest of the Codex performance audit (`AUDIT.md` on `codex/perf-audit`), one commit each. Verified headless; installed 2026-10-26 (`1dfc663`) for the user to test. Backup of the build it replaced: `~/.local/share/wallslaed-backups/installed-fast-switch-c7fb7c2/`.
 
