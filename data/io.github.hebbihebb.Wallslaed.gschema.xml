@@ -133,6 +133,17 @@
       <summary>Make the lock screen's blur follow the blur strength and brightness</summary>
       <description>GNOME blurs the lock screen either way; off leaves its own look.</description>
     </key>
+    <key name="blur-apps" type="b">
+      <default>false</default>
+      <summary>Set the blur behind app windows that ask for it</summary>
+      <description>GNOME 51 blurs behind windows of apps that request it (GTK 4.24 apps using backdrop-filter, some terminals). Off leaves GNOME's own setting.</description>
+    </key>
+    <key name="blur-apps-strength" type="u">
+      <range min="0" max="100"/>
+      <default>24</default>
+      <summary>Blur radius behind app windows, in pixels</summary>
+      <description>24 is GNOME's own.</description>
+    </key>
     <key name="topbar-autohide" type="b">
       <default>true</default>
       <summary>Hide the top bar while a window of the focused app overlaps it</summary>

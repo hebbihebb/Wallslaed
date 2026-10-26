@@ -3,6 +3,7 @@ import {Extension, InjectionManager} from 'resource:///org/gnome/shell/extension
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
 import {AnimatedHost} from './animated.js';
+import {AppBlur} from './appBlur.js';
 import {BlurLayers} from './blur.js';
 import {DaemonClient} from './daemon.js';
 import {LiveBlur} from './liveBlur.js';
@@ -55,12 +56,14 @@ export default class WallslaedExtension extends Extension {
         this._blur = new BlurLayers(this._settings, this._daemon);
         this._liveBlur = new LiveBlur(this._settings, this._injections);
         this._topBar = new TopBar(this._settings, this._injections);
+        this._appBlur = new AppBlur(this._settings);
     }
 
     _disableDesktop() {
         if (!this._daemon)
             return;
         this._injections.clear();
+        this._appBlur.destroy();
         this._blur.destroy();
         this._liveBlur.destroy();
         this._topBar.destroy();
@@ -74,6 +77,7 @@ export default class WallslaedExtension extends Extension {
         this._blur = null;
         this._liveBlur = null;
         this._topBar = null;
+        this._appBlur = null;
         this._menu = null;
         this._daemon = null;
     }

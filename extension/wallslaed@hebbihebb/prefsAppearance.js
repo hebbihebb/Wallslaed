@@ -51,6 +51,23 @@ export function appearancePage(window, settings) {
         ['blur-lockscreen', _('Match the Lock Screen'), _('GNOME blurs the lock screen either way; this gives it the strength and brightness above')],
     ]);
 
+    const apps = new Adw.PreferencesGroup({
+        title: _('App Windows'),
+        description: _('Some apps ask GNOME to blur what is behind their windows, such as GTK 4 apps with see-through backgrounds and some terminals.'),
+    });
+    page.add(apps);
+    switches(apps, settings, [
+        ['blur-apps', _('Set Their Blur'), _('Off leaves GNOME\'s own blur')],
+    ]);
+    const appStrength = new Adw.SpinRow({
+        title: _('Strength'),
+        subtitle: _('Pixels; GNOME uses 24'),
+        adjustment: new Gtk.Adjustment({lower: 0, upper: 100, step_increment: 2, page_increment: 10}),
+    });
+    settings.bind('blur-apps-strength', appStrength, 'value', Gio.SettingsBindFlags.DEFAULT);
+    settings.bind('blur-apps', appStrength, 'sensitive', Gio.SettingsBindFlags.GET);
+    apps.add(appStrength);
+
     const topBar = new Adw.PreferencesGroup({title: _('Top Bar')});
     page.add(topBar);
     switches(topBar, settings, [
