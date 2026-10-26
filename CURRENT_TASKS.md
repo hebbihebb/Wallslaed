@@ -13,6 +13,19 @@ Last updated: 2026-10-26 (shell blur installed for a live test; Codex performanc
 - Installed in the live session: `feature/shell-blur` (`9be4b8b`), installed 2026-10-26; extension takes effect after logging out and back in. Hide Top Bar was still enabled in the user's session at install time (conflicts with `topbar-autohide`), and the user's `blur-popups`, `blur-app-folders`, `blur-screenshot` were off.
 - Backups: `~/.local/share/wallslaed-backups/installed-main-d77bfef/` (before the shell blur test), `installed-gnome51-bf0d962/` (before the glycin conversion), `installed-random-settings-5a7d4ac/` (the last GNOME 50 build), `installed-main-480b01e/` (the build before this fix), `installed-transitions-2026-10-25/`, `installed-main-761c5ae/` (the build before the new transitions) and `installed-2026-10-25/` (before the menu race fix); each has a `restore.sh`.
 
+## Implemented: audit P-03..P-06 (`feature/fast-switch`, 2026-10-26)
+
+The rest of the Codex performance audit (`AUDIT.md` on `codex/perf-audit`), one commit each. Verified headless; not installed yet.
+
+| Finding | Change | Headless result (4K scale 2, `.scratch/fast-switch/`) |
+| --- | --- | --- |
+| P-03 music video repaints behind windows (`34c8a92`) | `animated.js`: a monitor covered by a maximized or fullscreen window loses its clone; player and sound keep running | covered: shell 10-30 ms CPU per 6 s and 0 frames (visible: 260-310 ms, 181 frames); player 410-430 ms (visible 860-990); music still playing; clone back on uncover, picture not black. A translucent maximized window shows the still frame |
+| P-04 blur transition, first-use stalls (`6c46d1f`) | `transitions.js`: Blur fades through two fixed blurs (24, 64) computed once, exact pairwise opacities, no offscreen buffer; the next effect's shader drawn once on a tiny hidden actor 3 s after each change (Random picks ahead) | Blur 290-430 ms CPU per change (audit: 660-810; fade 280-310); first-use Shatter/Freeze/Burn paint 29/5/10 ms (audit: 86-128). Blur's first frame still 18-70 ms (allocating its buffers) |
+| P-05 popup blur redraws (`f07b93c`) | `liveBlur.js`: over bare desktop the popup shows its piece of the baked blur (`blur.js bakedContent`); checked every frame against windows, other popups, top bar, transitions, video clones, background children (Fedora logo); tint drops the baked brightness | hover sweep 360-460 ms CPU (live: 830-850); a window under the menu switches to live, moving it away back to baked. The live blur sampled the wrong area in the headless scale-2 session (red where the wallpaper is green), so baked vs live screenshots differ (PSNR 17.8); the baked one matches what is behind |
+| P-06 cache too small, double decode (`f98cee8`) | `prepare.rs`: generated pictures kept newest-first up to `cache-size` (new key, 2048 MB, Preferences > Cache Size), blurs keep 40; blur baked from the pixels just decoded | 28 tests (2 new); 5.5K JXL with blur 448-450 ms vs 479-481 ms, 8K JPEG 347-350 vs 375-382 ms; preferences open, setting writes |
+
+Regression (runs 11, 12): earlier suites unchanged, no JS errors or CRITICALs. Not tested: the real desktop (NVIDIA, two monitors), real menus and hover by hand, how the baked popup looks next to the live one on the real screen, audio continuity by ear.
+
 ## Accepted: GNOME's texture cache bypassed, Previous prepared (`feature/fast-switch`, 2026-10-26)
 
 Audit P-02 remainder: GNOME's `BackgroundTextureCache` never evicts, so everything still loading through GNOME (Previous, end of a round, 16-bit images) stayed on the GPU for the session. The user chose option 3: every desktop wallpaper load goes through `preload.js`, plus the daemon preparing Previous.
