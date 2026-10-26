@@ -23,7 +23,7 @@ Audit finding P-01 (`AUDIT.md` on `codex/perf-audit`): GNOME 51 decodes a new wa
 | `preload.js`: decodes `next-picture` with glycin's async loaders, uploads 16 rows at a time (2 ms bursts every 8 ms, paused during transitions); hooks GNOME's `Background._loadImage` so a prepared file gets the finished texture; keeps only current and next, outside GNOME's texture cache; 16-bit/float images, misses and errors go to GNOME | verified headless (below) |
 | `transitions.js`: `busy` getter; `docs/how-it-works.md` | done |
 
-Headless, 3840x2160 at scale 2, through `tools/isolated-session.sh` (`.scratch/fast-switch/`, runs 2 and 3):
+Headless, 3840x2160 at scale 2, through `tools/isolated-session.sh` (`.scratch/fast-switch/`, runs 2-4; run 4 is the full suite on `1cf3489`, shell log free of CRITICAL/JS errors. Run 1 had a CRITICAL from the test calling `destroy()` by hand before a disable, not from the code):
 
 - Longest main-loop gap on a switch with no transition: 11-22 ms prepared, 56-158 ms through GNOME in the same session (audit: 125-156 ms). Fade 12-39 ms. Blur and Shatter still show 40-90 ms first-frame paints (audit P-04, the effects themselves).
 - Upload slices 0.1-0.2 ms each, a few 10-14 ms ones (likely GC); 4K picture uploaded in 0.1-0.4 s.
