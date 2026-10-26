@@ -23,6 +23,35 @@
     background-color: rgba(255, 255, 255, 0.12);
 }
 
+/* The theme gives each dash icon a solid tile in the old background colour;
+   clear it, keeping a light highlight for hover, focus and pressed states. */
+.wallslaed-blur-dash #dash .dash-item-container .show-apps .overview-icon,
+.wallslaed-blur-dash #dash .dash-item-container .overview-tile .overview-icon,
+.wallslaed-blur-dash #dash .dash-item-container .grid-search-result .overview-icon {
+    background-color: transparent;
+}
+
+.wallslaed-blur-dash #dash .dash-item-container .show-apps:focus .overview-icon,
+.wallslaed-blur-dash #dash .dash-item-container .overview-tile:focus .overview-icon,
+.wallslaed-blur-dash #dash .dash-item-container .grid-search-result:focus .overview-icon,
+.wallslaed-blur-dash #dash .dash-item-container .show-apps:checked .overview-icon,
+.wallslaed-blur-dash #dash .dash-item-container .overview-tile:checked .overview-icon,
+.wallslaed-blur-dash #dash .dash-item-container .grid-search-result:checked .overview-icon {
+    background-color: rgba(255, 255, 255, 0.1);
+}
+
+.wallslaed-blur-dash #dash .dash-item-container .show-apps:hover .overview-icon,
+.wallslaed-blur-dash #dash .dash-item-container .overview-tile:hover .overview-icon,
+.wallslaed-blur-dash #dash .dash-item-container .grid-search-result:hover .overview-icon {
+    background-color: rgba(255, 255, 255, 0.14);
+}
+
+.wallslaed-blur-dash #dash .dash-item-container .show-apps:active .overview-icon,
+.wallslaed-blur-dash #dash .dash-item-container .overview-tile:active .overview-icon,
+.wallslaed-blur-dash #dash .dash-item-container .grid-search-result:active .overview-icon {
+    background-color: rgba(255, 255, 255, 0.18);
+}
+
 /* Overview: search and workspace thumbnails let the blur through. */
 .wallslaed-blur-overview .search-entry {
     color: white;
