@@ -7,9 +7,10 @@ import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import {unpack} from './iface.js';
 
 export class DesktopMenu {
-    constructor(daemon, host, injections) {
+    constructor(daemon, host, injections, openPreferences) {
         this._daemon = daemon;
         this._host = host;
+        this._openPreferences = openPreferences;
         this._menus = new Map(); // menu -> its destroy handler id
 
         // Menus can stay open while things change; keep them current.
@@ -54,6 +55,8 @@ export class DesktopMenu {
             };
             items.music.visible = false;
             section.addMenuItem(items.music);
+            // GNOME's own "Settings" below opens GNOME Settings, not ours.
+            items.preferences = add(_('Wallslæd Settings'), () => this._openPreferences());
             // A separator inside the section would be hidden as its last item.
             items.separator = new PopupMenu.PopupSeparatorMenuItem();
             menu.addMenuItem(section, 0);

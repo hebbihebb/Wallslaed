@@ -49,7 +49,8 @@ export default class WallslaedExtension extends Extension {
         this._injections = new InjectionManager();
         this._daemon = new DaemonClient();
         this._animated = new AnimatedHost(this._settings, this._daemon);
-        this._menu = new DesktopMenu(this._daemon, this._animated, this._injections);
+        this._menu = new DesktopMenu(this._daemon, this._animated, this._injections,
+            () => this.openPreferences());
         this._transitions = new Transitions(this._settings, this._injections);
         this._blur = new BlurLayers(this._settings, this._daemon);
         this._liveBlur = new LiveBlur(this._settings, this._injections);

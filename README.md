@@ -12,14 +12,14 @@ It also does a few more things you might otherwise need several extensions for:
 - **Blur:** a frosted-glass look behind the overview, top bar, menus, notifications and lock screen.
 - **Auto-hiding top bar:** the top bar slides away when a window needs the space.
 
-Wallslæd is made for **GNOME 50 on Wayland**.
+Wallslæd is made for **GNOME 51 on Wayland** (Fedora 45).
 
 ## Getting started
 
 ### What you need
 
-- GNOME 50, on Wayland (the default on most distributions)
-- Rust, to build it (`cargo`)
+- GNOME 51, on Wayland (the default on most distributions)
+- Rust, to build it (`cargo`), and on Fedora `libseccomp-devel` and `fontconfig-devel` for its image decoding; `glycin-loaders` and `bubblewrap` come with GNOME
 - GStreamer with its GTK 4 video sink (on Fedora: `gstreamer1-plugin-gtk4`) and the usual codec plugins, for animated wallpapers
 - `ffmpeg`, for GIFs and video wallpapers
 - `yt-dlp`, only if you want music videos
@@ -60,6 +60,7 @@ Right-click an empty spot on the desktop:
 | Never Show This Again | Removes it from the rotation for good; the file itself stays where it is |
 | Pause Rotation | Keeps the current wallpaper until you resume |
 | Music Videos | Pick a saved music video to play (see below) |
+| Wallslæd Settings | Opens Wallslæd's settings (GNOME's own *Settings* below it opens GNOME Settings) |
 
 ### A keyboard shortcut for the next wallpaper
 

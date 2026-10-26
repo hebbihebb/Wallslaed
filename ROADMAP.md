@@ -2,6 +2,13 @@
 
 Nothing is scheduled. Items here are ideas to look into; each needs the user's go-ahead before work starts, and moves to `CURRENT_TASKS.md` when it does.
 
+## After the Fedora 45 / GNOME 51 port
+
+The port itself moved to `CURRENT_TASKS.md` (`fix/gnome-51`). Still open:
+
+- **`feature/shell-blur` on GNOME 51:** besides the port's changes (`close({animate: false})`, metadata), recheck `liveBlur.js`'s overrides against 51; `Shell.BlurEffect`, `UnlockDialog._updateBackgroundEffects` and `PopupMenuManager.addMenu` still exist.
+- **Glycin wallpaper loading** (GNOME 51 loads backgrounds through `BackgroundTextureCache`): check by eye that AVIF and HEIC wallpapers show (JXL ones rotate in), and how long very large images take.
+
 ## Research
 
 ### Stop drawing a music video while the desktop is fully covered

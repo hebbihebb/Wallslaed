@@ -23,6 +23,7 @@ Wallpapers are shuffled into a "bag":
 
 - The daemon runs one event loop with no polling. It wakes for the timer, a D-Bus call, or a file change in the folder, and is idle otherwise.
 - Images larger than the screen are scaled once to screen size and cached in `~/.cache/wallslaed`, which keeps the newest 40 files. An 8K image would otherwise sit in the compositor as a ~130 MB texture.
+- JPEG XL, AVIF and HEIC wallpapers always become a cached JPEG, at screen size or smaller, decoded with glycin (GNOME's own sandboxed image loaders). GNOME Shell decoding them itself stalled the desktop for up to a second on 5K JPEG XL files, and the blur bake couldn't read them.
 - The next wallpaper is prepared ahead of time, so switching is instant.
 - Transition effects are attached for the length of the transition and then removed.
 - The timer pauses while the screen is locked, and changes once on unlock if it missed a tick.
