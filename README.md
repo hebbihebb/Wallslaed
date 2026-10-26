@@ -1,119 +1,159 @@
 # Wallslæd
 
-A wallpaper rotator for GNOME Shell 50 on Wayland, built to stay light. It cycles through a folder of thousands of wallpapers without repeats, and adds:
-- desktop right-click items, including **Next Wallpaper** and **Show File Location**
-- optional GPU transition effects
-- animated GIF and video wallpapers
-- music videos: downloaded once with `yt-dlp`, then played on the desktop with sound, with GNOME's media controls
-- a browser for free animated wallpapers from Pixabay and Pexels
-- blur behind the overview, top bar, dash, menus, popups, app folders, screenshot tool and lock screen (in place of Blur my Shell)
-- a top bar that hides while a window overlaps it (in place of Hide Top Bar)
+Wallslæd changes your GNOME desktop wallpaper for you. Point it at a folder of pictures, and it shows them one by one on a timer, in random order, without repeats until it has gone through them all. It stays out of your way and uses very little memory, even with thousands of wallpapers.
 
-## How it's put together
+It also does a few more things you might otherwise need several extensions for:
 
-| Piece | What it does | Why it's separate |
-|---|---|---|
-| `wallslaed` daemon (Rust) | Scans the folder, picks the next wallpaper, shrinks big images to screen size, sets the background, serves a D-Bus API | Heavy work stays out of `gnome-shell`. Big image decodes there cause stutter, and GJS frees memory late, which looks like a leak. |
-| GNOME Shell extension (GJS) | Desktop menu items, transition effects, hosting animated wallpapers | Only code inside the Shell can touch the desktop background and its menu |
-| `wallslaed-player` (Rust, GTK 4) | Plays an animated wallpaper or music video | Runs **only** while one is showing. It exits when a still one takes over, so all its memory goes back to the system. |
+- **Right-click menu on the desktop:** skip to the next wallpaper, go back, mark favorites, never see one again.
+- **Transitions:** wallpapers can change with an effect, from a simple crossfade to melting, shattering or burning away.
+- **Animated wallpapers:** GIFs and videos play as your wallpaper, and pause when windows cover the desktop.
+- **Music videos:** download a music video once, then play it as your wallpaper with sound, with the usual media controls.
+- **Wallpaper browser:** search free animated wallpapers on Pixabay and Pexels and download them in one click.
+- **Blur:** a frosted-glass look behind the overview, top bar, menus, notifications and lock screen.
+- **Auto-hiding top bar:** the top bar slides away when a window needs the space.
 
-### Random without repeats
-Wallpapers are shuffled into a "bag":
-- Every file is shown once before anything repeats.
-- New files join the current round at random spots.
-- The last few of one round can't come straight back at the start of the next.
-- **Favorites** show up more often (*Favorite Weight*), and **Never Show This Again** removes a file for good.
-- Position and history survive restarts (`~/.local/state/wallslaed/state.json`).
+Wallslæd is made for **GNOME 50 on Wayland**.
 
-### Staying light
-- The daemon runs one event loop with no polling. It wakes for the timer, a D-Bus call, or a file change in the folder, and is idle otherwise.
-- Images larger than the screen are scaled once to screen size and cached in `~/.cache/wallslaed`, which keeps the newest 40 files. An 8K image would otherwise sit in the compositor as a ~130 MB texture.
-- The next wallpaper is prepared ahead of time, so switching is instant.
-- Transition effects are attached for the length of the transition and then removed.
-- The timer pauses while the screen is locked, and changes once on unlock if it missed a tick.
+## Getting started
 
-### Animated wallpapers
-- GIFs are converted once to VP9 video in the background (needs `ffmpeg`), because GIF decoding runs on the CPU every frame.
-- Video is decoded in hardware on the GPU the compositor runs on, and passed to GTK without copies where the drivers allow it.
-- Playback pauses when maximized or fullscreen windows cover every screen, and optionally on battery.
-- The overview and lock screen show a still frame.
+### What you need
 
-### Music videos
-- They live in their own folder (default `~/Videos/Music`) and never come up in the rotation; you pick one, and the rotation waits until you stop it or change the wallpaper.
-- Downloads run `yt-dlp` (in `~/.local/bin`) one at a time, in their own systemd scope, so a multi-gigabyte file doesn't count against the daemon's memory limit. Unfinished files stay out of the music folder. Only download videos you have the right to keep.
-- Sound plays even when windows cover the desktop. The player shows up in GNOME's media controls (top bar, lock screen, media keys).
-- Where each video was left off is saved every 15 seconds (`~/.local/state/wallslaed/media.json`), so locking the screen or logging out resumes it.
+- GNOME 50, on Wayland (the default on most distributions)
+- Rust, to build it (`cargo`)
+- GStreamer with its GTK 4 video sink (on Fedora: `gstreamer1-plugin-gtk4`) and the usual codec plugins, for animated wallpapers
+- `ffmpeg`, for GIFs and video wallpapers
+- `yt-dlp`, only if you want music videos
 
-## Install
+### Install
+
+From this folder, run:
 
 ```sh
 ./install.sh
 ```
 
-The script:
-- builds the binaries and puts them in `~/.local/bin`
-- installs the extension and the GSettings schema
-- enables the `wallslaed.service` systemd user unit
+Then **log out and back in**; GNOME only notices new extensions after that. If Wallslæd isn't switched on afterwards, turn it on in the Extensions app, or run `gnome-extensions enable wallslaed@hebbihebb`.
 
-On Wayland, GNOME Shell only notices a newly installed extension after you log out and back in. After that, run `gnome-extensions enable wallslaed@hebbihebb`.
+### Pick your wallpapers
 
-Pick your folder and timer in the extension's settings: `gnome-extensions prefs wallslaed@hebbihebb`. The default folder is `~/Pictures`.
+Open the settings, either from the Extensions app or with:
 
-Remove it with `./uninstall.sh`. Add `--purge` to also forget settings, favorites and history.
+```sh
+gnome-extensions prefs wallslaed@hebbihebb
+```
 
-## Use
+Choose your wallpaper folder and how often the wallpaper should change. Until you choose, Wallslæd uses your Pictures folder. Subfolders are included, and new pictures you add are picked up on their own.
 
-- **Right-click the desktop:**
-  - Next Wallpaper
-  - Previous Wallpaper
-  - Show File Location (opens Files with the file selected)
-  - Add to Favorites
-  - Never Show This Again
-  - Pause Rotation
-  - Music Videos ▸ (pick one to play)
-  - while one plays: Pause/Play Music, Mute, Stop Music Video
-- **Settings** (`gnome-extensions prefs wallslaed@hebbihebb`):
-  - *Wallpapers:* folder, timer, transitions, animated wallpaper options
-  - *Music Videos:* paste a link to download, play or delete saved videos, volume, download quality
-  - *Browse:* search Pixabay or Pexels for animated wallpapers, preview them, and download them into `<wallpaper folder>/Animated`. Each site needs a free API key.
-- **Command line:** `wallslaed next | prev | show | favorite | ban | pause | resume | toggle | rescan | status`, and for music videos `wallslaed music | play <file> | stop | download <url>`
-- **Keyboard shortcut:** in *Settings → Keyboard → Custom Shortcuts*, add one that runs `wallslaed next`.
+If you were using another wallpaper changer, turn it off: two of them will keep overriding each other. The same goes for Blur my Shell and Hide Top Bar, if you'd like Wallslæd to do those jobs.
 
-### Blur and the top bar
-- The overview, top bar and dash don't run a blur at all. The daemon makes a small blurred, darkened copy of each wallpaper (about an eighth of the screen size) while preparing it, and the Shell scales that up: one tiny texture per monitor, shared by every surface.
-- Menus, quick settings, notifications, dialogs, app folders and the screenshot panel float over windows, so they use GNOME's own live blur instead. It is attached when a popup opens and removed when it closes.
-- The lock screen keeps GNOME's own blur, set to the same strength and brightness. This is the only part of the extension that stays active while the screen is locked.
-- The top bar gives up its strip of screen and slides away while a window of the focused app touches it. It comes back in the overview, while one of its menus is open, and when the pointer pushes against the top edge.
-- Settings are on the **Appearance** page. Turn off Blur my Shell and Hide Top Bar first; they would fight over the same things.
+## Everyday use
 
-## Notes for this laptop
+### The desktop menu
 
-- Another wallpaper changer (such as `azwallpaper`) will fight Wallslæd over the background. `install.sh` warns if one is enabled.
-- `LIBVA_DRIVER_NAME=nvidia` is set in `/etc/environment` and in `~/.config/environment.d/va-api.conf`. That forces every VA-API app onto the NVIDIA driver, even on the AMD GPU. The player works around this for itself.
-- Here the built-in panel and HDMI port are wired to the NVIDIA GPU, so GNOME composites on it. The player detects that and decodes with NVDEC on the same GPU. On an AMD/Intel-primary setup it uses VA-API on that GPU.
+Right-click an empty spot on the desktop:
 
-## Measured
-
-These numbers come from a headless GNOME Shell 50 test session on this machine, with a 1920×1080 virtual monitor:
-
-| | |
+| Item | What it does |
 |---|---|
-| Daemon, idle | ~10 MB RSS, 0 wakeups in 20 s |
-| Daemon, after 300 rapid changes | ~10 MB RSS; peaks at ~180 MB only while first scaling an uncached 8K image, then returns it |
-| Player, converted GIF playing | ~3% of one CPU core |
-| Player, 1080p30 VP9 video playing | ~11% of one CPU core |
-| Player, paused (covered or on battery) | ~0% |
-| Player, static wallpaper | not running |
-| GNOME Shell, 200 wallpaper changes, 50 menus, 30 disable/enable cycles | no blur: +2.6 MB; Wallslæd blur: +2.8 MB; Blur my Shell: +26 MB (and 15 MB more to start with) |
+| Next Wallpaper / Previous Wallpaper | Skip ahead, or go back to the one before |
+| Show File Location | Opens Files with the current wallpaper selected |
+| Add to Favorites | Favorites come up more often (how often is a setting) |
+| Never Show This Again | Removes it from the rotation for good; the file itself stays where it is |
+| Pause Rotation | Keeps the current wallpaper until you resume |
+| Music Videos | Pick a saved music video to play (see below) |
 
-## Layout
+### A keyboard shortcut for the next wallpaper
+
+In GNOME Settings, go to *Keyboard → View and Customize Shortcuts → Custom Shortcuts*, and add one with the command `wallslaed next`.
+
+### How the order works
+
+Every wallpaper is shown once before any of them repeats, and one that just ended a round won't come straight back at the start of the next. Favorites show up more often. Wallslæd remembers where it was, so a restart or a log-out doesn't reset the order.
+
+## Transitions
+
+In the settings, under *Transitions*, pick how one wallpaper changes into the next, and how long the change takes:
+
+Crossfade, Zoom, Pixelate, Wipe, Blur, Tilt, Burn, Freeze, Shatter, Ripple, Melt and Light Leak. Or pick *Random* for a different one each time, or *None* for an instant change.
+
+The effects only run while the wallpaper is changing; they cost nothing the rest of the time.
+
+## Animated wallpapers
+
+Put GIFs or videos (MP4, WebM, MKV and the like) in your wallpaper folder, and they join the rotation like any picture.
+
+- They pause on their own while maximized or fullscreen windows cover the screen, and, if you like, while your laptop is on battery.
+- The overview and lock screen show a still frame.
+- The first time a GIF comes up, Wallslæd quietly converts it to a video in the background, which is much lighter to play.
+- Don't want them? Switch off *Include GIFs and Videos* in the settings.
+
+## Music videos
+
+A music video plays as your wallpaper with sound, and keeps playing while you work. It shows up in GNOME's media controls in the top bar and on the lock screen, and the media keys work.
+
+1. In the settings, open the **Music Videos** page and paste a video link. It downloads in the background; you can close the settings meanwhile.
+2. Play it from that page, or from the desktop menu under *Music Videos*.
+3. While it plays, the desktop menu has *Pause Music*, *Mute* and *Stop Music Video*.
+
+The wallpaper rotation waits while a music video plays. Wallslæd remembers where you left off in each video, so locking the screen or logging out picks up from there. Videos are saved in `~/Videos/Music` and never come up in the normal rotation.
+
+Only download videos you have the right to keep.
+
+## Finding new animated wallpapers
+
+The **Browse** page in the settings searches Pixabay and Pexels for free animated wallpapers. Preview one, then download it straight into an `Animated` folder inside your wallpaper folder.
+
+Each site needs a free API key, which you get by signing up on their website and paste into the Browse page once.
+
+## Blur and the top bar
+
+On the **Appearance** page in the settings:
+
+- **Blur** gives the overview, the top bar, the dash, menus, quick settings, notifications, dialogs, app folders, the screenshot tool and the lock screen a blurred, frosted look. Set how strong and how dark it is, and switch any of those parts off.
+- **Hide Over Windows** makes the top bar slide away while a window touches it, so maximized windows get the whole screen. It comes back in the overview, and when you push the mouse against the top edge of the screen.
+
+The blur is built to be light. Instead of blurring your wallpaper over and over, Wallslæd makes one small blurred copy when the wallpaper changes and reuses it everywhere. Menus only blur what's behind them while they're open.
+
+## Command line
+
+Everything in the desktop menu also works from a terminal, which is handy for scripts and shortcuts:
 
 ```
-daemon/     wallslaed: shuffle bag, scanning, pre-scaling, D-Bus service, CLI
-player/     wallslaed-player: animated wallpaper renderer
-extension/  wallslaed@hebbihebb: GNOME Shell extension and preferences
-data/       GSettings schema, systemd user unit
-tools/      isolated-session.sh: test without touching the real desktop
+wallslaed next          wallslaed favorite      wallslaed status
+wallslaed prev          wallslaed ban           wallslaed rescan
+wallslaed show          wallslaed pause         wallslaed resume
+wallslaed toggle
+
+wallslaed music             list saved music videos
+wallslaed play <file>       play one
+wallslaed stop              stop it
+wallslaed download <link>   download one
 ```
 
-`cargo test` runs the shuffle-bag, scanning, pre-scaling and download-parsing tests. Anything that needs GSettings, D-Bus or a GNOME Shell runs in a throwaway session: `tools/isolated-session.sh --install <scratch-dir> <script>` (see `AGENTS.md`).
+## Troubleshooting
+
+**The wallpaper keeps flipping back, or two wallpapers fight.**
+Another wallpaper changer is running. Turn it off in the Extensions app. The installer warns you about the common ones.
+
+**Nothing happened after installing.**
+Log out and back in, then make sure Wallslæd is switched on in the Extensions app.
+
+**The wallpaper doesn't change.**
+Check that rotation isn't paused (desktop menu), and that your folder has pictures in it. `wallslaed status` shows what Wallslæd sees.
+
+**Animated wallpapers show a still picture.**
+They pause while windows cover the screen, and on battery if that setting is on. Otherwise, check that GStreamer and its GTK 4 video sink are installed.
+
+**Blur or the top bar acts strangely.**
+Make sure Blur my Shell and Hide Top Bar are switched off; they try to do the same things.
+
+## Uninstall
+
+```sh
+./uninstall.sh
+```
+
+This removes the program and the extension but keeps your settings, favorites and history, in case you come back. To remove those too, run `./uninstall.sh --purge`. Your wallpapers and music videos are never touched.
+
+## For developers
+
+How the pieces fit together, measurements, and how to test without touching your own desktop: [docs/how-it-works.md](docs/how-it-works.md). Rules for coding agents are in [AGENTS.md](AGENTS.md).
