@@ -160,6 +160,8 @@ pub struct Status {
 
 thread_local! {
     static PLAYBACK: RefCell<Option<Playback>> = const { RefCell::new(None) };
+    /// Commands that arrived before playback was set up, run once it is.
+    static EARLY: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
 }
 
 fn main() -> glib::ExitCode {
@@ -178,12 +180,34 @@ fn main() -> glib::ExitCode {
         _ if std::env::var_os("WALLSLAED_ALLOW_DGPU").is_none() => prefer_integrated_gpu(),
         _ => {}
     }
+
+    // Listen before anything that might hang (GTK, the GPU driver, the first
+    // frame), so `quit` or end of input always ends us within two seconds.
+    let main_loop = glib::MainLoop::new(None, false);
+    let ctx = glib::MainContext::default();
+    let ml = main_loop.clone();
+    std::thread::spawn(move || {
+        for line in std::io::stdin().lock().lines() {
+            let Ok(line) = line else { break };
+            let line = line.trim().to_owned();
+            if line == "quit" {
+                break;
+            }
+            ctx.invoke(move || command(&line));
+        }
+        // Leave even if the main loop is stuck, so the extension never has to
+        // kill us; the grace period lets a music video save its position.
+        std::thread::spawn(|| {
+            std::thread::sleep(std::time::Duration::from_secs(QUIT_GRACE_SECS));
+            std::process::exit(0);
+        });
+        ctx.invoke(move || ml.quit());
+    });
+
     if gtk::init().is_err() {
         eprintln!("wallslaed-player: no display");
         return glib::ExitCode::FAILURE;
     }
-
-    let main_loop = glib::MainLoop::new(None, false);
     let (backend, paintable) = Backend::new(&opts);
 
     let display = gdk::Display::default().expect("display after gtk::init");
@@ -219,6 +243,9 @@ fn main() -> glib::ExitCode {
         })
     });
     report_state();
+    for line in EARLY.with(|e| std::mem::take(&mut *e.borrow_mut())) {
+        command(&line);
+    }
 
     let _mpris = opts.audio.then(|| {
         let title = opts.title.clone().unwrap_or_else(|| title_from_path(&opts.file));
@@ -230,26 +257,6 @@ fn main() -> glib::ExitCode {
             glib::ControlFlow::Continue
         });
     }
-
-    let ctx = glib::MainContext::default();
-    let ml = main_loop.clone();
-    std::thread::spawn(move || {
-        for line in std::io::stdin().lock().lines() {
-            let Ok(line) = line else { break };
-            let line = line.trim().to_owned();
-            if line == "quit" {
-                break;
-            }
-            ctx.invoke(move || command(&line));
-        }
-        // Leave even if the main loop is stuck, so the extension never has to
-        // kill us; the grace period lets a music video save its position.
-        std::thread::spawn(|| {
-            std::thread::sleep(std::time::Duration::from_secs(QUIT_GRACE_SECS));
-            std::process::exit(0);
-        });
-        ctx.invoke(move || ml.quit());
-    });
 
     main_loop.run();
     report_position(true);
@@ -264,7 +271,10 @@ pub fn command(line: &str) {
     let arg = arg.trim().parse::<f64>().ok();
     let changed = PLAYBACK.with(|p| {
         let mut p = p.borrow_mut();
-        let Some(p) = p.as_mut() else { return false };
+        let Some(p) = p.as_mut() else {
+            EARLY.with(|e| e.borrow_mut().push(line.to_owned()));
+            return false;
+        };
         let (playing, muted) = (p.playing, p.muted);
         match (cmd, arg) {
             ("play", _) => p.playing = true,
