@@ -53,7 +53,9 @@ export default class WallslaedPreferences extends ExtensionPreferences {
         const folderRow = new Adw.ActionRow({title: _('Folder')});
         const showFolder = () => {
             const f = settings.get_string('folder');
-            folderRow.subtitle = f || GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_PICTURES) || '';
+            // Subtitles are markup: a folder named "a & b" would break it.
+            folderRow.subtitle = GLib.markup_escape_text(
+                f || GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_PICTURES) || '', -1);
         };
         showFolder();
         settings.connect('changed::folder', showFolder);

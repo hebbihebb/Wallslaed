@@ -25,12 +25,6 @@ const UPowerIface = `
 </node>`;
 const UPowerProxy = Gio.DBusProxy.makeProxyWrapper(UPowerIface);
 
-function playerPath() {
-    const local = GLib.build_filenamev([GLib.get_home_dir(), '.local', 'bin', 'wallslaed-player']);
-    if (GLib.file_test(local, GLib.FileTest.IS_EXECUTABLE))
-        return local;
-    return GLib.find_program_in_path('wallslaed-player');
-}
 
 /**
  * Emits 'media-changed' when a music video starts, stops, or its play/mute
@@ -50,6 +44,8 @@ export class AnimatedHost extends Signals.EventEmitter {
         this._signals = [];
         this._checkId = 0;
         this._paused = false;
+        this._cancellable = new Gio.Cancellable();
+        this._playerPath = undefined; // undefined: still looking
         this.media = null;
 
         const on = (obj, signal, fn) => this._signals.push([obj, obj.connect(signal, fn)]);
@@ -80,7 +76,27 @@ export class AnimatedHost extends Signals.EventEmitter {
             });
         this._signals.push([this._upower, this._upower.connect('g-properties-changed', check)]);
 
-        this._sync();
+        this._findPlayer();
+    }
+
+    // Asynchronously: a home folder that stops answering (a network mount)
+    // must not freeze the Shell. Starts playback once found.
+    _findPlayer() {
+        const local = Gio.File.new_for_path(
+            GLib.build_filenamev([GLib.get_home_dir(), '.local', 'bin', 'wallslaed-player']));
+        local.query_info_async('access::can-execute', Gio.FileQueryInfoFlags.NONE,
+            GLib.PRIORITY_DEFAULT, this._cancellable, (file, res) => {
+                let path = null;
+                try {
+                    if (file.query_info_finish(res).get_attribute_boolean('access::can-execute'))
+                        path = file.get_path();
+                } catch (e) {
+                    if (e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED))
+                        return;
+                }
+                this._playerPath = path ?? GLib.find_program_in_path('wallslaed-player');
+                this._sync();
+            });
     }
 
     /** Send a playback command (play, pause, toggle, mute, unmute) to a music video. */
@@ -118,7 +134,9 @@ export class AnimatedHost extends Signals.EventEmitter {
             return;
         this._stop();
 
-        const path = playerPath();
+        const path = this._playerPath;
+        if (path === undefined)
+            return; // _findPlayer() syncs again
         if (!path) {
             console.warn('Wallslæd: wallslaed-player not found; showing a still frame');
             return;
@@ -164,8 +182,16 @@ export class AnimatedHost extends Signals.EventEmitter {
             }
             player.exited = true;
             this._retiring.delete(player);
-            if (this._player === player)
-                this._stop();
+            if (this._player !== player)
+                return;
+            // Nobody asked it to quit: it failed (an unreadable video, a
+            // crash). A music video would otherwise stay "playing" with no
+            // player; the daemon goes back to the rotation, positions kept.
+            if (audio) {
+                console.warn(`Wallslæd: music video player stopped unexpectedly (${file})`);
+                this._daemon.call('StopMedia');
+            }
+            this._stop();
         });
         this._readState(player, new Gio.DataInputStream({base_stream: proc.get_stdout_pipe()}));
         if (audio) {
@@ -411,6 +437,7 @@ export class AnimatedHost extends Signals.EventEmitter {
     }
 
     destroy() {
+        this._cancellable.cancel();
         if (this._checkId)
             GLib.source_remove(this._checkId);
         this._checkId = 0;
