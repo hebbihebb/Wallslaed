@@ -15,7 +15,7 @@ Last updated: 2026-10-26 (shell blur installed for a live test; Codex performanc
 
 ## Implemented: audit P-03..P-06 (`feature/fast-switch`, 2026-10-26)
 
-The rest of the Codex performance audit (`AUDIT.md` on `codex/perf-audit`), one commit each. Verified headless; not installed yet.
+The rest of the Codex performance audit (`AUDIT.md` on `codex/perf-audit`), one commit each. Verified headless; installed 2026-10-26 (`1dfc663`) for the user to test. Backup of the build it replaced: `~/.local/share/wallslaed-backups/installed-fast-switch-c7fb7c2/`.
 
 | Finding | Change | Headless result (4K scale 2, `.scratch/fast-switch/`) |
 | --- | --- | --- |
