@@ -6,7 +6,7 @@ Nothing is scheduled. Items here are ideas to look into; each needs the user's g
 
 The port itself moved to `CURRENT_TASKS.md` (`fix/gnome-51`). Still open:
 
-- **GJS wallpaper-change deadlock** (see `docs/how-it-works.md`): when GJS !1134 is released, check the Fedora package, re-run `.scratch/blur51/baseline/test.sh` (two writes, 0.35 s), and drop the README's freeze note. Until then, consider reporting the headless reproduction (GNOME Shell alone, no extensions) on that merge request.
+- **GJS wallpaper-change deadlock:** see `docs/gnome-gjs-deadlock.md` for the workarounds (biggest: stop writing GNOME's background settings on every change) and what to do when GJS !1134 is released, or if it never is. Each workaround needs the user's go-ahead.
 - **Glycin wallpaper loading** (GNOME 51 loads backgrounds through `BackgroundTextureCache`): check by eye that AVIF and HEIC wallpapers show (JXL ones rotate in), and how long very large images take.
 
 ## Research

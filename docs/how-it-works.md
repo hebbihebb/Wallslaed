@@ -54,7 +54,7 @@ Wallpapers are shuffled into a "bag":
 
 ## GNOME's wallpaper-change deadlock
 
-GJS 1.90 (GNOME 51) and earlier can deadlock GNOME Shell for good: its garbage collector, holding GJS's toggle queue lock, frees the background a wallpaper change replaced (its `GnomeWallClock`'s `GSettings`), which waits for the GSettings backend lock; meanwhile dconf's thread, holding that lock to deliver a settings change, spins waiting for the toggle queue lock. Fix: [GJS !1134](https://gitlab.gnome.org/GNOME/gjs/-/merge_requests/1134) (open, 2026-10-26). In a headless GNOME Shell 51 without Wallslæd, wallpaper changes every 0.35 s hung it in 4 of 4 runs when both picture keys were written separately, and 0 of 3 when written in one transaction; the daemon writes them in one (`set_background()`). With Wallslæd's extension adding garbage, 0.35 s changes still hung once; 1.5 s changes didn't. Test scripts: `.scratch/blur51/baseline/`.
+GNOME Shell (GJS 1.90 and earlier) can freeze for good around wallpaper changes; the daemon writes both picture keys in one transaction to make it rarer. Cause, measurements, workarounds and what to do whether or not upstream fixes it: [gnome-gjs-deadlock.md](gnome-gjs-deadlock.md).
 
 ## Measured
 
