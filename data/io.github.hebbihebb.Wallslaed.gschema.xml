@@ -128,5 +128,14 @@
       <default>true</default>
       <summary>Blur behind the screenshot tool's panel</summary>
     </key>
+    <key name="topbar-autohide" type="b">
+      <default>true</default>
+      <summary>Hide the top bar while a window of the focused app overlaps it</summary>
+      <description>The bar still shows in the overview and while one of its menus is open, and maximized windows use the whole screen.</description>
+    </key>
+    <key name="topbar-reveal-at-edge" type="b">
+      <default>true</default>
+      <summary>Show the hidden top bar when the pointer pushes against the top edge</summary>
+    </key>
   </schema>
 </schemalist>

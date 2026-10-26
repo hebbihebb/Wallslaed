@@ -4,6 +4,7 @@ import {AnimatedHost} from './animated.js';
 import {BlurLayers} from './blur.js';
 import {DaemonClient} from './daemon.js';
 import {LiveBlur} from './liveBlur.js';
+import {TopBar} from './topbar.js';
 import {DesktopMenu} from './menu.js';
 import {Transitions} from './transitions.js';
 
@@ -19,12 +20,14 @@ export default class WallslaedExtension extends Extension {
         this._transitions = new Transitions(this._settings, this._injections);
         this._blur = new BlurLayers(this._settings, this._daemon);
         this._liveBlur = new LiveBlur(this._settings, this._injections);
+        this._topBar = new TopBar(this._settings, this._injections);
     }
 
     disable() {
         this._injections.clear();
         this._blur.destroy();
         this._liveBlur.destroy();
+        this._topBar.destroy();
         this._menu.destroy();
         this._animated.destroy();
         this._transitions.destroy();
@@ -34,6 +37,7 @@ export default class WallslaedExtension extends Extension {
         this._transitions = null;
         this._blur = null;
         this._liveBlur = null;
+        this._topBar = null;
         this._menu = null;
         this._daemon = null;
         this._settings = null;
