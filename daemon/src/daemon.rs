@@ -5,6 +5,7 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::time::Duration;
 
 use gio::prelude::*;
 use glib::{ControlFlow, SourceId, Variant, VariantDict};
@@ -54,6 +55,8 @@ const INTROSPECTION: &str = r#"
 /// Consecutive files that may fail to load before we stop trying.
 const MAX_FAILURES: u32 = 8;
 const RESCAN_DELAY_SECS: u32 = 3;
+/// Blur settings changes closer together than this bake once.
+const REBAKE_DELAY_MS: u64 = 150;
 const FALLBACK_SCREEN: (u32, u32) = (3840, 2160);
 /// Download progress is announced in steps of this fraction.
 const PROGRESS_STEP: f64 = 0.01;
@@ -74,8 +77,14 @@ struct Daemon {
     rng: fastrand::Rng,
     current: Option<Prepared>,
     preloaded: Option<Prepared>,
+    /// The source being preloaded right now, so it isn't started twice.
+    preloading: Option<String>,
     /// Bumped on every user-visible change so stale worker results are dropped.
     generation: u64,
+    /// Bumped on every rebake, so only the newest one's result is used.
+    blur_generation: u64,
+    /// A rebake waiting for the blur settings to stop changing.
+    rebake_timer: Option<SourceId>,
     failures: u32,
     timer: Option<SourceId>,
     rescan_timer: Option<SourceId>,
@@ -138,7 +147,10 @@ pub fn run() -> Result<(), String> {
         rng: fastrand::Rng::new(),
         current: None,
         preloaded: None,
+        preloading: None,
         generation: 0,
+        blur_generation: 0,
+        rebake_timer: None,
         failures: 0,
         timer: None,
         rescan_timer: None,
@@ -373,7 +385,7 @@ fn connect_settings(d: &Shared) {
             d1.borrow_mut().preloaded = None;
             advance(&d1, Step::Reload);
         }
-        "blur-strength" | "blur-brightness" | "blur-overview" | "blur-panel" => rebake(&d1),
+        "blur-strength" | "blur-brightness" | "blur-overview" | "blur-panel" => queue_rebake(&d1),
         _ => {}
     });
 }
@@ -564,18 +576,33 @@ fn apply(d: &Shared, p: Prepared) {
     }
 }
 
+/// Rebake once the blur settings stop changing (a slider being dragged).
+fn queue_rebake(d: &Shared) {
+    if let Some(id) = d.borrow_mut().rebake_timer.take() {
+        id.remove();
+    }
+    let d1 = d.clone();
+    let id = glib::timeout_add_local_once(Duration::from_millis(REBAKE_DELAY_MS), move || {
+        d1.borrow_mut().rebake_timer = None;
+        rebake(&d1);
+    });
+    d.borrow_mut().rebake_timer = Some(id);
+}
+
 /// Bake the blur again for what's on screen, after its settings changed.
 fn rebake(d: &Shared) {
-    let (blur, cache_dir, current, media) = {
+    let (generation, blur, cache_dir, keep, current, media) = {
         let mut s = d.borrow_mut();
         s.preloaded = None;
-        let pic = |p: &Option<Prepared>| p.as_ref().and_then(|p| p.picture.clone());
-        (s.blur(), s.cache_dir.clone(), pic(&s.current), pic(&s.media_now))
+        s.blur_generation += 1;
+        let pic = |p: &Option<Prepared>| p.as_ref().and_then(|p| Some((p.picture.clone()?, p.key.clone())));
+        (s.blur_generation, s.blur(), s.cache_dir.clone(), s.in_use(), pic(&s.current), pic(&s.media_now))
     };
     let d = d.clone();
     glib::spawn_future_local(async move {
-        let bake = move |pic: &Option<PathBuf>| {
-            prepare::blur_only(pic.as_deref()?, &cache_dir, blur?)
+        let bake = move |pic: &Option<(PathBuf, String)>| {
+            let (picture, key) = pic.as_ref()?;
+            prepare::blur_only(picture, key, &cache_dir, blur?, &keep)
         };
         let (cur, med) = (current.clone(), media.clone());
         let Ok((current_blur, media_blur)) =
@@ -585,12 +612,19 @@ fn rebake(d: &Shared) {
         };
         {
             let mut s = d.borrow_mut();
+            // A newer rebake, or newer settings, will bring their own.
+            if s.blur_generation != generation || s.blur() != blur {
+                return;
+            }
             // Only if the same pictures are still up; a newer one brings its own blur.
-            if let Some(c) = s.current.as_mut().filter(|c| c.picture == current) {
+            let same = |p: &Prepared, pic: &Option<(PathBuf, String)>| {
+                p.picture.as_ref() == pic.as_ref().map(|(picture, _)| picture)
+            };
+            if let Some(c) = s.current.as_mut().filter(|c| same(c, &current)) {
                 c.blurred = current_blur;
                 c.baked_with = blur;
             }
-            if let Some(m) = s.media_now.as_mut().filter(|m| m.picture == media) {
+            if let Some(m) = s.media_now.as_mut().filter(|m| same(m, &media)) {
                 m.blurred = media_blur;
                 m.baked_with = blur;
             }
@@ -603,18 +637,26 @@ fn rebake(d: &Shared) {
 /// Prepare the next wallpaper now so switching later is instant.
 fn preload(d: &Shared) {
     let (generation, job) = {
-        let s = d.borrow();
-        let ok = eligible(&s.library);
-        let Some(next) = s.bag.peek(&ok) else { return };
-        if s.preloaded.as_ref().is_some_and(|p| p.source == next) {
+        let mut s = d.borrow_mut();
+        let next = {
+            let ok = eligible(&s.library);
+            s.bag.peek(&ok).map(str::to_owned)
+        };
+        let Some(next) = next else { return };
+        if s.preloaded.as_ref().is_some_and(|p| p.source == next) ||
+            s.preloading.as_deref() == Some(next.as_str())
+        {
             return;
         }
-        (s.generation, s.job(next.to_owned()))
+        s.preloading = Some(next.clone());
+        (s.generation, s.job(next))
     };
     let d = d.clone();
     glib::spawn_future_local(async move {
-        if let Ok(Ok(p)) = gio::spawn_blocking(move || prepare::prepare(&job)).await {
-            let mut s = d.borrow_mut();
+        let result = gio::spawn_blocking(move || prepare::prepare(&job)).await;
+        let mut s = d.borrow_mut();
+        s.preloading = None;
+        if let Ok(Ok(p)) = result {
             // Dropped if the blur settings changed while it was being prepared.
             if s.generation == generation && p.baked_with == s.blur() {
                 s.preloaded = Some(p);
@@ -714,12 +756,15 @@ fn start_media(d: &Shared, path: String) {
     let d = d.clone();
     glib::spawn_future_local(async move {
         let result = gio::spawn_blocking(move || prepare::prepare(&job)).await;
+        let mut stale = false;
         let ok = {
             let mut s = d.borrow_mut();
             match result {
                 // Ignore it if another video was picked in the meantime.
                 Ok(Ok(p)) if s.media.active.as_deref() == Some(p.source.as_str()) => {
                     set_background(&s, p.picture.as_deref());
+                    // Baked before a settings change: bake again below.
+                    stale = p.baked_with != s.blur();
                     s.media_now = Some(p);
                     true
                 }
@@ -733,6 +778,9 @@ fn start_media(d: &Shared, path: String) {
         };
         if ok {
             emit_changed(&d);
+            if stale {
+                rebake(&d);
+            }
         } else {
             stop_media(&d);
         }
@@ -998,15 +1046,25 @@ impl Daemon {
             prescale: self.settings.boolean("prescale"),
             cache_dir: self.cache_dir.clone(),
             blur: self.blur(),
+            keep: self.in_use(),
         }
     }
 
     /// The blur the extension shows, if any surface uses the baked one.
     fn blur(&self) -> Option<Blur> {
         let s = &self.settings;
-        (s.boolean("blur-overview") || s.boolean("blur-panel")).then(|| Blur {
-            strength: s.uint("blur-strength"),
-            brightness: s.double("blur-brightness"),
-        })
+        (s.boolean("blur-overview") || s.boolean("blur-panel"))
+            .then(|| Blur::new(s.uint("blur-strength"), s.double("blur-brightness")))
+    }
+
+    /// Generated files that are on screen or about to be: the cache keeps them.
+    fn in_use(&self) -> Vec<PathBuf> {
+        [&self.current, &self.media_now, &self.preloaded]
+            .into_iter()
+            .flatten()
+            .flat_map(|p| [&p.picture, &p.blurred, &p.playable])
+            .flatten()
+            .cloned()
+            .collect()
     }
 }
