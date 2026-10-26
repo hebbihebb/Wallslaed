@@ -7,9 +7,32 @@ Last updated: 2026-10-26 (shell blur installed for a live test; Codex performanc
 - `main`: accepted work, including the Random/settings fix, the GNOME 51 port and the glycin conversion (merged 2026-10-26), pushed to `origin`.
 - `fix/random-and-settings`, `fix/gnome-51`, `feature/glycin-prepare`: merged into `main` (fast-forward) and pushed.
 - `feature/shell-blur`: resumed 2026-10-26 for GNOME 51, `main` merged in, all planned steps implemented and verified headless; see below. Pushed; installed 2026-10-26 for a live test. Not merged.
+- `feature/fast-switch`: P-01 from the Codex performance audit, branched from `feature/shell-blur`; see below. Not merged, not installed, not pushed.
+- `codex/perf-audit`: the Codex performance audit report (`bdb984d`, `AUDIT.md`), branched from `7f533a9`; keep until P-01..P-06 are decided.
 - `codex/audit-shell-blur`: deleted 2026-10-26 (all 14 findings fixed). Next: a Codex performance audit on `codex/perf-audit`; prompt in `.scratch/codex-perf-audit-prompt.md`.
 - Installed in the live session: `feature/shell-blur` (`9be4b8b`), installed 2026-10-26; extension takes effect after logging out and back in. Hide Top Bar was still enabled in the user's session at install time (conflicts with `topbar-autohide`), and the user's `blur-popups`, `blur-app-folders`, `blur-screenshot` were off.
 - Backups: `~/.local/share/wallslaed-backups/installed-main-d77bfef/` (before the shell blur test), `installed-gnome51-bf0d962/` (before the glycin conversion), `installed-random-settings-5a7d4ac/` (the last GNOME 50 build), `installed-main-480b01e/` (the build before this fix), `installed-transitions-2026-10-25/`, `installed-main-761c5ae/` (the build before the new transitions) and `installed-2026-10-25/` (before the menu race fix); each has a `restore.sh`.
+
+## In progress: wallpaper switch without the freeze (`feature/fast-switch`, 2026-10-26)
+
+Audit finding P-01 (`AUDIT.md` on `codex/perf-audit`): GNOME 51 decodes a new wallpaper synchronously and uploads it in one call on the compositor thread, a 125-155 ms freeze at 4K even with transitions off. The audit proposed a persistent presenter replacing GNOME's background handling; this does less: it keeps GNOME's pipeline and only supplies the texture.
+
+| Change | State |
+| --- | --- |
+| Daemon: `next-picture` in the state once the next wallpaper is prepared, `Changed` emitted when it is (empty while music plays) | verified: build, 25 tests, no warnings |
+| `preload.js`: decodes `next-picture` with glycin's async loaders, uploads 16 rows at a time (2 ms bursts every 8 ms, paused during transitions); hooks GNOME's `Background._loadImage` so a prepared file gets the finished texture; keeps only current and next, outside GNOME's texture cache; 16-bit/float images, misses and errors go to GNOME | verified headless (below) |
+| `transitions.js`: `busy` getter; `docs/how-it-works.md` | done |
+
+Headless, 3840x2160 at scale 2, through `tools/isolated-session.sh` (`.scratch/fast-switch/`, runs 2 and 3):
+
+- Longest main-loop gap on a switch with no transition: 11-22 ms prepared, 56-158 ms through GNOME in the same session (audit: 125-156 ms). Fade 12-39 ms. Blur and Shatter still show 40-90 ms first-frame paints (audit P-04, the effects themselves).
+- Upload slices 0.1-0.2 ms each, a few 10-14 ms ones (likely GC); 4K picture uploaded in 0.1-0.4 s.
+- Screenshots of a prepared JPEG, an RGBA PNG and a 5.5K JXL are pixel-identical to GNOME's own rendering of the same file (PSNR inf).
+- GPU memory over 40 changes stays flat: 0.5-0.8 GB with the final build (run 3), 0.8-1.1 GB in run 2 after many fallback loads (the audit saw +2.2 GB over 64 with GNOME's cache).
+- Rapid Next, Previous (falls back), disable/enable mid-upload, lock/unlock: no JS errors, no settings leak.
+- Known miss: at the end of a shuffle round the daemon can't predict the next wallpaper, so that one change loads through GNOME, as before.
+
+Not tested: the real NVIDIA desktop with two monitors, real input during a change, HDR or 16-bit images on screen, multi-hour use.
 
 ## Accepted: `feature/glycin-prepare` (2026-10-26)
 

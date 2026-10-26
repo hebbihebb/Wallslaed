@@ -10,6 +10,7 @@ import {LiveBlur} from './liveBlur.js';
 import {LockBlur} from './lockBlur.js';
 import {TopBar} from './topbar.js';
 import {DesktopMenu} from './menu.js';
+import {Preloader} from './preload.js';
 import {Transitions} from './transitions.js';
 
 // All the real work (scanning, picking, decoding) happens in the wallslaed
@@ -53,6 +54,8 @@ export default class WallslaedExtension extends Extension {
         this._menu = new DesktopMenu(this._daemon, this._animated, this._injections,
             () => this.openPreferences());
         this._transitions = new Transitions(this._settings, this._injections);
+        this._preloader = new Preloader(this._daemon, this._injections,
+            () => this._transitions.busy);
         this._blur = new BlurLayers(this._settings, this._daemon);
         this._liveBlur = new LiveBlur(this._settings, this._injections);
         this._topBar = new TopBar(this._settings, this._injections);
@@ -69,11 +72,13 @@ export default class WallslaedExtension extends Extension {
         this._topBar.destroy();
         this._menu.destroy();
         this._animated.destroy();
+        this._preloader.destroy();
         this._transitions.destroy();
         this._daemon.destroy();
         this._injections = null;
         this._animated = null;
         this._transitions = null;
+        this._preloader = null;
         this._blur = null;
         this._liveBlur = null;
         this._topBar = null;

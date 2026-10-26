@@ -322,6 +322,11 @@ export class Transitions {
             });
     }
 
+    /** Whether a transition is playing on any monitor. */
+    get busy() {
+        return this._running.size > 0;
+    }
+
     _pick(background) {
         if (this._picked?.background === background)
             return this._picked.name;

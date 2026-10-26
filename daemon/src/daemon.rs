@@ -654,13 +654,21 @@ fn preload(d: &Shared) {
     let d = d.clone();
     glib::spawn_future_local(async move {
         let result = gio::spawn_blocking(move || prepare::prepare(&job)).await;
-        let mut s = d.borrow_mut();
-        s.preloading = None;
-        if let Ok(Ok(p)) = result {
-            // Dropped if the blur settings changed while it was being prepared.
-            if s.generation == generation && p.baked_with == s.blur() {
-                s.preloaded = Some(p);
+        let ready = {
+            let mut s = d.borrow_mut();
+            s.preloading = None;
+            match result {
+                // Dropped if the blur settings changed while it was being prepared.
+                Ok(Ok(p)) if s.generation == generation && p.baked_with == s.blur() => {
+                    s.preloaded = Some(p);
+                    true
+                }
+                _ => false,
             }
+        };
+        // The extension uploads `next-picture` ahead of the switch.
+        if ready {
+            emit_changed(&d);
         }
     });
 }
@@ -747,6 +755,9 @@ fn state_variant(s: &Daemon) -> Variant {
         dict.insert("blurred", path_str(&m.blurred));
     }
     dict.insert("audio", s.media_now.is_some());
+    // What the rotation shows next, once prepared; nothing while music plays.
+    let next = s.preloaded.as_ref().filter(|_| s.media.active.is_none());
+    dict.insert("next-picture", next.map(|p| path_str(&p.picture)).unwrap_or_default());
     dict.end()
 }
 

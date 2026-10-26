@@ -24,7 +24,8 @@ Wallpapers are shuffled into a "bag":
 - The daemon runs one event loop with no polling. It wakes for the timer, a D-Bus call, or a file change in the folder, and is idle otherwise.
 - Images larger than the screen are scaled once to screen size and cached in `~/.cache/wallslaed`, which keeps the newest 40 files. An 8K image would otherwise sit in the compositor as a ~130 MB texture.
 - JPEG XL, AVIF and HEIC wallpapers always become a cached JPEG, at screen size or smaller, decoded with glycin (GNOME's own sandboxed image loaders). GNOME Shell decoding them itself stalled the desktop for up to a second on 5K JPEG XL files, and the blur bake couldn't read them.
-- The next wallpaper is prepared ahead of time, so switching is instant.
+- The next wallpaper is prepared ahead of time, so switching is instant. The daemon reports it as `next-picture`, and the extension (`preload.js`) decodes it through glycin's async loaders and uploads it to the GPU a few rows at a time while the shell is idle. GNOME 51 would otherwise decode and upload it on the compositor's thread at the moment of the change, a 125-155 ms freeze at 4K even with transitions off. When GNOME loads that file, it gets the finished texture; anything not prepared (the first wallpaper after login, Previous, 16-bit or HDR images) loads through GNOME as before.
+- Prepared textures stay out of GNOME's texture cache, which keeps every wallpaper it has loaded on the GPU for the life of the session (about 2 GB after 64 4K wallpapers in a test). Only the current and next ones are kept.
 - Transition effects are attached for the length of the transition and then removed.
 - The timer pauses while the screen is locked, and changes once on unlock if it missed a tick.
 
