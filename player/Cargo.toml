@@ -6,4 +6,6 @@ description = "Wallslæd animated wallpaper renderer"
 license = "GPL-3.0-or-later"
 
 [dependencies]
+# _exit for the quit fallback; already used by the daemon.
+libc = "0.2"
 gtk = { package = "gtk4", version = "0.11", features = ["v4_14"] }

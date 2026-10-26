@@ -19,6 +19,7 @@ mod mpris;
 
 use std::cell::RefCell;
 use std::io::{BufRead, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
@@ -35,6 +36,9 @@ const DGPU_DECODERS: &[&str] = &[
 const REPORT_SECS: u32 = 15;
 /// After `quit` or end of stdin, how long a clean exit may take.
 const QUIT_GRACE_SECS: u64 = 2;
+
+/// Set once `quit` or end of input arrives, possibly before the main loop runs.
+static QUITTING: AtomicBool = AtomicBool::new(false);
 
 const DAEMON_NAME: &str = "io.github.hebbihebb.Wallslaed";
 const DAEMON_PATH: &str = "/io/github/hebbihebb/Wallslaed";
@@ -197,10 +201,12 @@ fn main() -> glib::ExitCode {
         }
         // Leave even if the main loop is stuck, so the extension never has to
         // kill us; the grace period lets a music video save its position.
+        // _exit, not exit: exit handlers would run alongside a busy GTK.
         std::thread::spawn(|| {
             std::thread::sleep(std::time::Duration::from_secs(QUIT_GRACE_SECS));
-            std::process::exit(0);
+            unsafe { libc::_exit(0) };
         });
+        QUITTING.store(true, Ordering::SeqCst);
         ctx.invoke(move || ml.quit());
     });
 
@@ -258,7 +264,10 @@ fn main() -> glib::ExitCode {
         });
     }
 
-    main_loop.run();
+    // Setup may have run the quit already, before there was a loop to end.
+    if !QUITTING.load(Ordering::SeqCst) {
+        main_loop.run();
+    }
     report_position(true);
     PLAYBACK.with(|p| p.borrow_mut().take());
     drop(windows);

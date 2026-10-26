@@ -121,6 +121,9 @@ struct Daemon {
     /// The active music video once its poster is ready, and its thumbnail.
     media_now: Option<Prepared>,
     media_art: Option<PathBuf>,
+    /// Bumped on every start_media, so a stale result is told apart even
+    /// when the same video was picked again.
+    media_generation: u64,
     downloads: Downloads,
 }
 
@@ -186,6 +189,7 @@ pub fn run() -> Result<(), String> {
         media_path: state_dir.join("media.json"),
         media_now: None,
         media_art: None,
+        media_generation: 0,
         downloads: Downloads::default(),
     }));
 
@@ -974,13 +978,14 @@ fn state_variant(s: &Daemon) -> Variant {
 
 /// Put a music video on the desktop and hold the rotation.
 fn start_media(d: &Shared, path: String) {
-    let job = {
+    let (job, generation) = {
         let mut s = d.borrow_mut();
+        s.media_generation += 1;
         s.media.active = Some(path.clone());
         save_media(&s);
         s.media_now = None;
         s.media_art = None;
-        s.job(path.clone())
+        (s.job(path.clone()), s.media_generation)
     };
     restart_timer(d);
     emit_changed(d);
@@ -994,8 +999,8 @@ fn start_media(d: &Shared, path: String) {
         let mut stale = false;
         let ok = {
             let mut s = d.borrow_mut();
-            // Another video was picked, or music stopped, in the meantime.
-            if s.media.active.as_deref() != Some(path.as_str()) {
+            // Another video was picked (or this one again), or music stopped.
+            if s.media_generation != generation || s.media.active.as_deref() != Some(path.as_str()) {
                 return;
             }
             match result {

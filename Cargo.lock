@@ -2203,6 +2203,7 @@ name = "wallslaed-player"
 version = "0.1.0"
 dependencies = [
  "gtk4",
+ "libc",
 ]
 
 [[package]]
