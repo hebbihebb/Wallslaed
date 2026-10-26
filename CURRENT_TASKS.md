@@ -1,14 +1,33 @@
 # Current Tasks
 
-Last updated: 2026-10-26 (Random uses every effect; desktop menu opens Wallslæd's settings; shell blur shelved).
+Last updated: 2026-10-26 (port to GNOME Shell 51 after the Fedora 45 upgrade).
 
 ## Git state
 
 - `main`: accepted work, including the menu race fix and the new transitions (merged 2026-10-25), pushed to `origin`.
 - `fix/random-and-settings` (2026-10-26): off `main`, see below. Not merged; installed.
+- `fix/gnome-51` (2026-10-26): off `fix/random-and-settings`, the GNOME 51 port, see below. Not merged, not installed.
 - `feature/shell-blur`: shelved until the user has time to test it properly; see "Shelved" below. Not merged.
-- Installed in the live session: `fix/random-and-settings` (`5a7d4ac`), installed 2026-10-26; the extension takes effect after logging out and back in. Before that, the user had restored `main` (`480b01e`) after trying the shell-blur build.
+- Installed in the live session: `fix/random-and-settings` (`5a7d4ac`). Since the Fedora 45 upgrade (GNOME Shell 51.0) the shell marks it OUT OF DATE and doesn't load it; the daemon still rotates wallpapers with GNOME's plain crossfade.
 - Backups: `~/.local/share/wallslaed-backups/installed-main-480b01e/` (the build before this fix), `installed-transitions-2026-10-25/`, `installed-main-761c5ae/` (the build before the new transitions) and `installed-2026-10-25/` (before the menu race fix); each has a `restore.sh`.
+
+## In progress: `fix/gnome-51` (2026-10-26)
+
+The user upgraded to Fedora 45 (GNOME Shell 51.0, GTK 4.24, GStreamer 1.28). Researched beforehand in `ROADMAP.md`; the port:
+
+| Change | State |
+| --- | --- |
+| `metadata.json`: `shell-version` `["51"]` (the shader port doesn't run on 50) | verified: extension ACTIVE headless |
+| `transitions.js`: `Shell.GLSLEffect` (removed in 51) replaced by `Clutter.ShaderEffect` + `vfunc_get_static_snippet` (`set_post`), uniforms set by name | verified: a mid-transition screenshot of all twelve effects shows each one drawing; no JS, shader or Cogl errors |
+| `transitions.js`: outgoing menu closed with `{animate: false}` (51 read the old `PopupAnimation.NONE` as "animate") | verified: a menu open during a wallpaper change closes |
+| `transitions.js`: GNOME 51's reduced-motion setting plays Crossfade | verified: 100/100 picks were Crossfade with `reduced-motion` set to `reduce` |
+| Rust rebuilt against Fedora 45's libraries | verified: `cargo build`/`cargo test` (18 passed), no warnings |
+
+Also verified headless: Random draws all twelve effects, the desktop menu's "Wallslæd Settings" opens the preferences window (GTK 4.24, no errors), 5 disable/enable cycles. Test script: `.scratch/gnome-51/test.sh`.
+
+A headless GNOME Shell 51 segfaults on shutdown if a client window is still open (`gnome_shell_plugin_kill_window_effects`); it happens without Wallslæd too (`.scratch/gnome-51/baseline/`), so test scripts close windows before stopping the shell.
+
+Not tested: real NVIDIA rendering of the ported shaders, real clicks, the music video player on Fedora 45. `ptrace_scope` is 0 on this install, so `eu-stack` still works without `sudo`.
 
 ## In progress: `fix/random-and-settings` (2026-10-26)
 

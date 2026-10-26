@@ -9,7 +9,6 @@ import Shell from 'gi://Shell';
 import St from 'gi://St';
 
 import * as Background from 'resource:///org/gnome/shell/ui/background.js';
-import * as BoxPointer from 'resource:///org/gnome/shell/ui/boxpointer.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
 // The `random` pool: every effect. A stored 'dissolve', 'slide' or 'iris'
@@ -263,30 +262,29 @@ const SHADERS = {
         cogl_color_out = c;`,
 };
 
-// Shell.GLSLEffect caches the pipeline per GType, so each shader needs its own class.
+// Clutter.ShaderEffect caches the snippet per GType, so each shader needs its
+// own class. The code runs after the default texture lookup (`set_post`), on
+// `cogl_color_out`. Uniforms a shader doesn't use are skipped by Cogl.
 const ShaderEffects = Object.fromEntries(Object.entries(SHADERS).map(([name, shader]) => [name,
     GObject.registerClass({GTypeName: `WallslaedTransition_${name}`},
-        class extends Shell.GLSLEffect {
-            vfunc_build_pipeline() {
-                this.add_glsl_snippet(Cogl.SnippetHook.FRAGMENT,
-                    DECLARATIONS + (shader.declarations ?? ''), shader.code ?? shader, false);
+        class extends Clutter.ShaderEffect {
+            vfunc_get_static_snippet() {
+                const snippet = Cogl.Snippet.new(Cogl.SnippetHook.FRAGMENT,
+                    DECLARATIONS + (shader.declarations ?? ''), null);
+                snippet.set_post(shader.code ?? shader);
+                return snippet;
             }
 
             setup(width, height) {
-                this._progress = this.get_uniform_location('progress');
                 // Pixelate divides by the size; never let it be zero.
-                this.set_uniform_float(this.get_uniform_location('size'), 2,
-                    [Math.max(1, width), Math.max(1, height)]);
-                // Compiled out of shaders that don't use it.
-                const seed = this.get_uniform_location('seed');
-                if (seed >= 0)
-                    this.set_uniform_float(seed, 1, [Math.random()]);
+                this.set_uniform_float('size', 2, [Math.max(1, width), Math.max(1, height)]);
+                this.set_uniform_float('seed', 1, [Math.random()]);
                 this.setProgress(0);
             }
 
             setProgress(p) {
-                this.set_uniform_float(this._progress, 1, [p]);
-                this.queue_repaint();
+                // Queues a repaint itself.
+                this.set_uniform_float('progress', 1, [p]);
             }
         }),
 ]));
@@ -330,6 +328,9 @@ export class Transitions {
         let name = this._settings.get_string('transition');
         if (name === 'random')
             name = EFFECTS[Math.floor(Math.random() * EFFECTS.length)];
+        // Reduced motion keeps a transition, just not a moving one.
+        if (name !== 'none' && St.Settings.get().reduced_motion === St.ReducedMotion.REDUCE)
+            name = 'fade';
         this._picked = {background, name};
         return name;
     }
@@ -353,7 +354,7 @@ export class Transitions {
         // the new one underneath, so a right-click never opens a menu that is
         // about to be destroyed with its wallpaper.
         actor.reactive = false;
-        actor._backgroundMenu?.close(BoxPointer.PopupAnimation.NONE);
+        actor._backgroundMenu?.close({animate: false});
 
         switch (name) {
         case 'zoom':
