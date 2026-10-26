@@ -7,8 +7,8 @@ Last updated: 2026-10-26 (shell blur and top-bar autohide on `feature/shell-blur
 - `main`: accepted work, including the menu race fix and the new transitions (merged 2026-10-25), pushed to `origin`.
 - `fix/menu-race-dissolve` and `feature/more-transitions`: merged into `main` and deleted (never pushed).
 - `feature/shell-blur` (2026-10-26): blur and top-bar autohide, see below. Not merged, not installed.
-- Installed in the live session: the new-transitions build (2026-10-25 23:29), which still offers Slide and Iris. Reinstalling `main` drops them; a stored `slide` or `iris` then plays as Crossfade.
-- Backups: `~/.local/share/wallslaed-backups/installed-main-761c5ae/` (the build before the new transitions) and `installed-2026-10-25/` (before the menu race fix); each has a `restore.sh`.
+- Installed in the live session: `feature/shell-blur` (`a62229a`), installed 2026-10-26 for testing, with Blur my Shell and Hide Top Bar disabled by the user. The extension code takes effect after logging out and back in.
+- Backups: `~/.local/share/wallslaed-backups/installed-transitions-2026-10-25/` (the build before the shell blur), `installed-main-761c5ae/` (the build before the new transitions) and `installed-2026-10-25/` (before the menu race fix); each has a `restore.sh`.
 
 ## Done: music videos, media controls, wallpaper browser
 
@@ -66,4 +66,4 @@ How it is lighter than Blur my Shell: the daemon bakes a small blurred copy of e
 
 Not testable headless: real NVIDIA rendering, real mouse pressure at the edge, a real lock and unlock.
 
-Next: a Codex audit (prompt given to the user 2026-10-26), then the user disables Blur my Shell and Hide Top Bar, a backup is made, and this build is installed for testing. Nothing installed yet.
+Next: a Codex audit (prompt given to the user 2026-10-26), the user tests the installed build (installed 2026-10-26, backup `installed-transitions-2026-10-25`).
