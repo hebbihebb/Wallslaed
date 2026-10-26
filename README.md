@@ -6,6 +6,8 @@ A wallpaper rotator for GNOME Shell 50 on Wayland, built to stay light. It cycle
 - animated GIF and video wallpapers
 - music videos: downloaded once with `yt-dlp`, then played on the desktop with sound, with GNOME's media controls
 - a browser for free animated wallpapers from Pixabay and Pexels
+- blur behind the overview, top bar, dash, menus, popups, app folders, screenshot tool and lock screen (in place of Blur my Shell)
+- a top bar that hides while a window overlaps it (in place of Hide Top Bar)
 
 ## How it's put together
 
@@ -77,6 +79,13 @@ Remove it with `./uninstall.sh`. Add `--purge` to also forget settings, favorite
 - **Command line:** `wallslaed next | prev | show | favorite | ban | pause | resume | toggle | rescan | status`, and for music videos `wallslaed music | play <file> | stop | download <url>`
 - **Keyboard shortcut:** in *Settings → Keyboard → Custom Shortcuts*, add one that runs `wallslaed next`.
 
+### Blur and the top bar
+- The overview, top bar and dash don't run a blur at all. The daemon makes a small blurred, darkened copy of each wallpaper (about an eighth of the screen size) while preparing it, and the Shell scales that up: one tiny texture per monitor, shared by every surface.
+- Menus, quick settings, notifications, dialogs, app folders and the screenshot panel float over windows, so they use GNOME's own live blur instead. It is attached when a popup opens and removed when it closes.
+- The lock screen keeps GNOME's own blur, set to the same strength and brightness. This is the only part of the extension that stays active while the screen is locked.
+- The top bar gives up its strip of screen and slides away while a window of the focused app touches it. It comes back in the overview, while one of its menus is open, and when the pointer pushes against the top edge.
+- Settings are on the **Appearance** page. Turn off Blur my Shell and Hide Top Bar first; they would fight over the same things.
+
 ## Notes for this laptop
 
 - Another wallpaper changer (such as `azwallpaper`) will fight Wallslæd over the background. `install.sh` warns if one is enabled.
@@ -95,6 +104,7 @@ These numbers come from a headless GNOME Shell 50 test session on this machine, 
 | Player, 1080p30 VP9 video playing | ~11% of one CPU core |
 | Player, paused (covered or on battery) | ~0% |
 | Player, static wallpaper | not running |
+| GNOME Shell, 200 wallpaper changes, 50 menus, 30 disable/enable cycles | no blur: +2.6 MB; Wallslæd blur: +2.8 MB; Blur my Shell: +26 MB (and 15 MB more to start with) |
 
 ## Layout
 
