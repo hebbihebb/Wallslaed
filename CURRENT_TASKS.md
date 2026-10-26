@@ -1,15 +1,15 @@
 # Current Tasks
 
-Last updated: 2026-10-26 (shell blur ported to GNOME 51, popup boxes fixed, all 14 audit findings fixed, app-window blur; GNOME deadlock found).
+Last updated: 2026-10-26 (shell blur installed for a live test; Codex performance audit next).
 
 ## Git state
 
 - `main`: accepted work, including the Random/settings fix, the GNOME 51 port and the glycin conversion (merged 2026-10-26), pushed to `origin`.
 - `fix/random-and-settings`, `fix/gnome-51`, `feature/glycin-prepare`: merged into `main` (fast-forward) and pushed.
-- `feature/shell-blur`: resumed 2026-10-26 for GNOME 51, `main` merged in, all planned steps implemented and verified headless; see below. Not merged, not installed, not pushed since `5a25d8a`.
-- `codex/audit-shell-blur`: the Codex audit report (`0402ef0`); all 14 findings fixed, ready to delete once the user agrees.
-- Installed in the live session: `main` as of `f1f3137` (`feature/glycin-prepare`), installed 2026-10-26 on Fedora 45 / GNOME Shell 51.0.
-- Backups: `~/.local/share/wallslaed-backups/installed-gnome51-bf0d962/` (before the glycin conversion), `installed-random-settings-5a7d4ac/` (the last GNOME 50 build), `installed-main-480b01e/` (the build before this fix), `installed-transitions-2026-10-25/`, `installed-main-761c5ae/` (the build before the new transitions) and `installed-2026-10-25/` (before the menu race fix); each has a `restore.sh`.
+- `feature/shell-blur`: resumed 2026-10-26 for GNOME 51, `main` merged in, all planned steps implemented and verified headless; see below. Pushed; installed 2026-10-26 for a live test. Not merged.
+- `codex/audit-shell-blur`: deleted 2026-10-26 (all 14 findings fixed). Next: a Codex performance audit on `codex/perf-audit`; prompt in `.scratch/codex-perf-audit-prompt.md`.
+- Installed in the live session: `feature/shell-blur` (`9be4b8b`), installed 2026-10-26; extension takes effect after logging out and back in. Hide Top Bar was still enabled in the user's session at install time (conflicts with `topbar-autohide`), and the user's `blur-popups`, `blur-app-folders`, `blur-screenshot` were off.
+- Backups: `~/.local/share/wallslaed-backups/installed-main-d77bfef/` (before the shell blur test), `installed-gnome51-bf0d962/` (before the glycin conversion), `installed-random-settings-5a7d4ac/` (the last GNOME 50 build), `installed-main-480b01e/` (the build before this fix), `installed-transitions-2026-10-25/`, `installed-main-761c5ae/` (the build before the new transitions) and `installed-2026-10-25/` (before the menu race fix); each has a `restore.sh`.
 
 ## Accepted: `feature/glycin-prepare` (2026-10-26)
 
