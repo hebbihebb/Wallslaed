@@ -7,13 +7,13 @@ Last updated: 2026-10-26 (shell blur installed for a live test; Codex performanc
 - `main`: accepted work, including the Random/settings fix, the GNOME 51 port and the glycin conversion (merged 2026-10-26), pushed to `origin`.
 - `fix/random-and-settings`, `fix/gnome-51`, `feature/glycin-prepare`: merged into `main` (fast-forward) and pushed.
 - `feature/shell-blur`: resumed 2026-10-26 for GNOME 51, `main` merged in, all planned steps implemented and verified headless; see below. Pushed; installed 2026-10-26 for a live test. Not merged.
-- `feature/fast-switch`: P-01 from the Codex performance audit, branched from `feature/shell-blur`; see below. Not merged, not installed, not pushed.
+- `feature/fast-switch`: P-01 from the Codex performance audit, branched from `feature/shell-blur`; see below. Installed and accepted 2026-10-26; not merged, not pushed. Backup of the build it replaced: `~/.local/share/wallslaed-backups/installed-shell-blur-ebfca40/`.
 - `codex/perf-audit`: the Codex performance audit report (`bdb984d`, `AUDIT.md`), branched from `7f533a9`; keep until P-01..P-06 are decided.
 - `codex/audit-shell-blur`: deleted 2026-10-26 (all 14 findings fixed). Next: a Codex performance audit on `codex/perf-audit`; prompt in `.scratch/codex-perf-audit-prompt.md`.
 - Installed in the live session: `feature/shell-blur` (`9be4b8b`), installed 2026-10-26; extension takes effect after logging out and back in. Hide Top Bar was still enabled in the user's session at install time (conflicts with `topbar-autohide`), and the user's `blur-popups`, `blur-app-folders`, `blur-screenshot` were off.
 - Backups: `~/.local/share/wallslaed-backups/installed-main-d77bfef/` (before the shell blur test), `installed-gnome51-bf0d962/` (before the glycin conversion), `installed-random-settings-5a7d4ac/` (the last GNOME 50 build), `installed-main-480b01e/` (the build before this fix), `installed-transitions-2026-10-25/`, `installed-main-761c5ae/` (the build before the new transitions) and `installed-2026-10-25/` (before the menu race fix); each has a `restore.sh`.
 
-## In progress: wallpaper switch without the freeze (`feature/fast-switch`, 2026-10-26)
+## Accepted: wallpaper switch without the freeze (`feature/fast-switch`, 2026-10-26)
 
 Audit finding P-01 (`AUDIT.md` on `codex/perf-audit`): GNOME 51 decodes a new wallpaper synchronously and uploads it in one call on the compositor thread, a 125-155 ms freeze at 4K even with transitions off. The audit proposed a persistent presenter replacing GNOME's background handling; this does less: it keeps GNOME's pipeline and only supplies the texture.
 
@@ -32,7 +32,7 @@ Headless, 3840x2160 at scale 2, through `tools/isolated-session.sh` (`.scratch/f
 - Rapid Next, Previous (falls back), disable/enable mid-upload, lock/unlock: no JS errors, no settings leak.
 - Known miss: at the end of a shuffle round the daemon can't predict the next wallpaper, so that one change loads through GNOME, as before.
 
-Not tested: the real NVIDIA desktop with two monitors, real input during a change, HDR or 16-bit images on screen, multi-hour use.
+Installed 2026-10-26 (`603caca`). After logging back in, the user tested Next by hand: "it already feels way more responsive". Extension ACTIVE, no Wallslæd errors in the journal. Still not tested: HDR or 16-bit images on screen, multi-hour GPU memory on the real desktop.
 
 ## Accepted: `feature/glycin-prepare` (2026-10-26)
 
