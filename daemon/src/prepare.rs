@@ -4,16 +4,17 @@
 
 use std::fs::File;
 use std::hash::{Hash, Hasher};
-use std::io::BufWriter;
+use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 use fast_image_resize::{FilterType, ResizeAlg, ResizeOptions, Resizer};
 use image::codecs::jpeg::JpegEncoder;
-use image::{DynamicImage, ImageDecoder, ImageReader};
+use image::codecs::png::PngEncoder;
+use image::{DynamicImage, ImageDecoder, ImageEncoder, ImageReader};
 
 use crate::library::{self, Kind};
 
@@ -30,6 +31,11 @@ const SCALE_SLACK: f64 = 1.10;
 const BLUR_MAX_SOURCE_PIXELS: u64 = 40_000_000;
 /// The blurred copy has at most this many pixels, whatever the strength.
 const BLUR_MAX_PIXELS: f64 = 2_000_000.0;
+/// ffmpeg reading one frame for a poster: anything longer is stuck (a broken
+/// file, a source that stopped answering).
+const POSTER_LIMIT: Duration = Duration::from_secs(30);
+/// Converting a GIF to video, at the lowest priority.
+const TRANSCODE_LIMIT: Duration = Duration::from_secs(15 * 60);
 
 #[derive(Debug, Clone)]
 pub struct Job {
@@ -79,11 +85,16 @@ pub struct Prepared {
 }
 
 static TRANSCODING: AtomicBool = AtomicBool::new(false);
-/// One decode at a time keeps peak memory to a single image.
+/// One decode at a time keeps peak memory to a single image. Only decoding
+/// takes it: a poster or conversion is ffmpeg's memory, not ours, and a stuck
+/// one must not hold up every other wallpaper.
 static JOB_LOCK: Mutex<()> = Mutex::new(());
 
+fn decode_lock() -> std::sync::MutexGuard<'static, ()> {
+    JOB_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 pub fn prepare(job: &Job) -> Result<Prepared, String> {
-    let _guard = JOB_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let src = Path::new(&job.source);
     let kind = library::kind_of(src).ok_or("unsupported file")?;
     let meta = std::fs::metadata(src).map_err(|e| e.to_string())?;
@@ -92,32 +103,45 @@ pub fn prepare(job: &Job) -> Result<Prepared, String> {
 
     let result = match kind {
         Kind::Gif if library::gif_is_animated(src) => prepare_gif(job, &key),
-        Kind::Static | Kind::Gif => prepare_static(job, &key).map(|(p, pixels)| {
-            // Bake from the pixels just decoded, if any, rather than
-            // decoding the picture again.
-            if let (Some(blur), Some(img)) = (job.blur, pixels) {
-                return Prepared { blurred: bake_blur_image(&img, &key, &job.cache_dir, blur), ..p };
-            }
-            p
-        }),
-        Kind::Video => Ok(Prepared {
-            source: job.source.clone(),
-            picture: poster(job, &key),
-            playable: Some(src.to_path_buf()),
-            blurred: None,
-            baked_with: None,
-            key: String::new(),
-        }),
+        Kind::Static | Kind::Gif => {
+            let _guard = decode_lock();
+            prepare_static(job, &key).map(|(p, pixels)| {
+                // Bake from the pixels just decoded, if any, rather than
+                // decoding the picture again.
+                if let (Some(blur), Some(img)) = (job.blur, pixels) {
+                    return Prepared { blurred: bake_blur_image(&img, &key, &job.cache_dir, blur), ..p };
+                }
+                p
+            })
+        }
+        // No frame means ffmpeg can't read it: playing it would fail too.
+        Kind::Video => match poster(job, &key) {
+            Some(picture) => Ok(Prepared {
+                source: job.source.clone(),
+                picture: Some(picture),
+                playable: Some(src.to_path_buf()),
+                blurred: None,
+                baked_with: None,
+                key: String::new(),
+            }),
+            None => Err("can't read this video".into()),
+        },
     };
     let result = result.map(|mut p| {
         p.key = key.clone();
         if let (Some(blur), Some(picture), None) = (job.blur, &p.picture, &p.blurred) {
+            let _guard = decode_lock();
             p.blurred = bake_blur(picture, &key, &job.cache_dir, blur);
         }
         p.baked_with = job.blur;
         p
     });
-    trim_cache(&job.cache_dir, &job.keep, job.cache_bytes);
+    // What we're about to hand back is in use too, however big it is.
+    let mut keep = job.keep.clone();
+    if let Ok(p) = &result {
+        keep.extend([&p.picture, &p.playable, &p.blurred].into_iter().flatten().cloned());
+    }
+    trim_cache(&job.cache_dir, &keep, job.cache_bytes);
     // Decoding big images grows the heap; give it back to the OS.
     unsafe {
         libc::malloc_trim(0);
@@ -141,7 +165,7 @@ fn prepare_static(job: &Job, key: &str) -> Result<(Prepared, Option<DynamicImage
     }
 
     let out = job.cache_dir.join(format!("{key}.jpg"));
-    if out.exists() {
+    if reusable(&out) {
         touch(&out);
         return Ok((done(out), None));
     }
@@ -188,20 +212,14 @@ fn prepare_static(job: &Job, key: &str) -> Result<(Prepared, Option<DynamicImage
         dst
     };
 
-    let tmp = out.with_extension("jpg.part");
-    {
-        let f = File::create(&tmp).map_err(|e| e.to_string())?;
-        let mut enc = JpegEncoder::new_with_quality(BufWriter::new(f), 92);
-        enc.encode_image(&dst).map_err(|e| e.to_string())?;
-    }
-    std::fs::rename(&tmp, &out).map_err(|e| e.to_string())?;
+    write_file(&out, "jpg", |w| JpegEncoder::new_with_quality(w, 92).encode_image(&dst))?;
     Ok((done(out), Some(dst)))
 }
 
 fn prepare_gif(job: &Job, key: &str) -> Result<Prepared, String> {
     let src = Path::new(&job.source);
     let webm = job.cache_dir.join(format!("{key}.webm"));
-    let playable = if webm.exists() {
+    let playable = if reusable(&webm) {
         touch(&webm);
         webm
     } else {
@@ -223,28 +241,28 @@ fn prepare_gif(job: &Job, key: &str) -> Result<Prepared, String> {
 /// A still frame for the overview, lock screen, and while paused.
 fn poster(job: &Job, key: &str) -> Option<PathBuf> {
     let out = job.cache_dir.join(format!("{key}-poster.jpg"));
-    if out.exists() {
+    if reusable(&out) {
         touch(&out);
         return Some(out);
     }
     let tmp = job.cache_dir.join(format!("{key}-poster.part.jpg"));
     let (w, h) = job.screen;
-    let ok = Command::new("ffmpeg")
-        .args(["-nostdin", "-v", "error", "-y", "-i"])
-        .arg(&job.source)
-        .args([
-            "-frames:v",
-            "1",
-            "-vf",
-            &format!("scale={w}:{h}:force_original_aspect_ratio=increase"),
-            "-q:v",
-            "3",
-        ])
-        .arg(&tmp)
-        .stdin(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success());
-    if ok && std::fs::rename(&tmp, &out).is_ok() {
+    let ok = run(
+        Command::new("ffmpeg")
+            .args(["-nostdin", "-v", "error", "-y", "-i"])
+            .arg(&job.source)
+            .args([
+                "-frames:v",
+                "1",
+                "-vf",
+                &format!("scale={w}:{h}:force_original_aspect_ratio=increase"),
+                "-q:v",
+                "3",
+            ])
+            .arg(&tmp),
+        POSTER_LIMIT,
+    );
+    if ok && reusable(&tmp) && std::fs::rename(&tmp, &out).is_ok() {
         Some(out)
     } else {
         let _ = std::fs::remove_file(&tmp);
@@ -262,10 +280,12 @@ pub fn blur_only(
     keep: &[PathBuf],
     cache_bytes: u64,
 ) -> Option<PathBuf> {
-    let _guard = JOB_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = decode_lock();
     std::fs::create_dir_all(cache_dir).ok()?;
     let out = bake_blur(picture, key, cache_dir, blur);
-    trim_cache(cache_dir, keep, cache_bytes);
+    let mut keep = keep.to_vec();
+    keep.extend(out.clone());
+    trim_cache(cache_dir, &keep, cache_bytes);
     unsafe {
         libc::malloc_trim(0);
     }
@@ -282,7 +302,7 @@ pub fn blur_only(
 /// to keep it changes its mtime, not its pixels.
 fn bake_blur(picture: &Path, key: &str, cache_dir: &Path, blur: Blur) -> Option<PathBuf> {
     let out = blur_path(key, cache_dir, blur);
-    if out.exists() {
+    if reusable(&out) {
         touch(&out);
         return Some(out);
     }
@@ -304,7 +324,7 @@ fn blur_path(key: &str, cache_dir: &Path, blur: Blur) -> PathBuf {
 /// [`bake_blur`] from pixels already decoded (and oriented).
 fn bake_blur_image(img: &DynamicImage, key: &str, cache_dir: &Path, blur: Blur) -> Option<PathBuf> {
     let out = blur_path(key, cache_dir, blur);
-    if out.exists() {
+    if reusable(&out) {
         touch(&out);
         return Some(out);
     }
@@ -340,38 +360,102 @@ fn bake_blur_image(img: &DynamicImage, key: &str, cache_dir: &Path, blur: Blur) 
         }
     }
 
-    let tmp = out.with_extension("png.part");
-    if small.save_with_format(&tmp, image::ImageFormat::Png).is_err()
-        || std::fs::rename(&tmp, &out).is_err()
-    {
-        let _ = std::fs::remove_file(&tmp);
-        return None;
-    }
+    let (w, h) = small.dimensions();
+    write_file(&out, "png", |wr| PngEncoder::new(wr).write_image(small.as_raw(), w, h, image::ExtendedColorType::Rgb8))
+        .ok()?;
     Some(out)
+}
+
+/// Encode into a temporary file next to `out`, then rename it into place.
+/// Every write is checked, the buffer's last one included, so a full disk
+/// can't leave a cut-off file under the final name.
+fn write_file(
+    out: &Path,
+    ext: &str,
+    encode: impl FnOnce(&mut BufWriter<File>) -> image::ImageResult<()>,
+) -> Result<(), String> {
+    let tmp = out.with_extension(format!("{ext}.part"));
+    let result = (|| {
+        let mut w = BufWriter::new(File::create(&tmp).map_err(|e| e.to_string())?);
+        encode(&mut w).map_err(|e| e.to_string())?;
+        w.flush().map_err(|e| e.to_string())?;
+        std::fs::rename(&tmp, out).map_err(|e| e.to_string())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
+}
+
+/// A cached file that looks whole. One that doesn't (cut off by a full disk,
+/// emptied) is removed so it gets made again.
+fn reusable(path: &Path) -> bool {
+    let Ok(mut f) = File::open(path) else { return false };
+    let len = f.metadata().map_or(0, |m| m.len());
+    // JPEG ends with its end-of-image marker; PNG with its IEND chunk.
+    let tail: &[u8] = match path.extension().and_then(|e| e.to_str()) {
+        Some("jpg") => &[0xFF, 0xD9],
+        Some("png") => &[b'I', b'E', b'N', b'D', 0xAE, 0x42, 0x60, 0x82],
+        _ => &[],
+    };
+    let mut end = vec![0; tail.len()];
+    let whole = len > tail.len() as u64
+        && f.seek(SeekFrom::End(-(tail.len() as i64))).is_ok()
+        && f.read_exact(&mut end).is_ok()
+        && end == tail;
+    if !whole {
+        let _ = std::fs::remove_file(path);
+    }
+    whole
+}
+
+/// Runs `cmd`, killing it if it takes longer than `limit`. True if it succeeded.
+fn run(cmd: &mut Command, limit: Duration) -> bool {
+    let Ok(mut child) = cmd.stdin(Stdio::null()).spawn() else { return false };
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if start.elapsed() < limit => std::thread::sleep(Duration::from_millis(50)),
+            _ => {
+                eprintln!("wallslaed: {:?} took too long; stopped it", cmd.get_program());
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
+    }
 }
 
 fn transcode_gif_later(src: PathBuf, out: PathBuf, max_width: u32) {
     if TRANSCODING.swap(true, Ordering::AcqRel) {
         return;
     }
+    /// Lets the next GIF convert however this one ends.
+    struct Done;
+    impl Drop for Done {
+        fn drop(&mut self) {
+            TRANSCODING.store(false, Ordering::Release);
+        }
+    }
     std::thread::spawn(move || {
+        let _done = Done;
         let tmp = out.with_extension("part.webm");
         let filter = format!("scale='trunc(min(iw\\,{max_width})/2)*2':-2:flags=lanczos");
-        let ok = Command::new("nice")
-            .args(["-n", "19", "ffmpeg", "-nostdin", "-v", "error", "-y", "-i"])
-            .arg(&src)
-            .args([
-                "-vf", &filter, "-c:v", "libvpx-vp9", "-crf", "34", "-b:v", "0", "-row-mt", "1",
-                "-deadline", "good", "-cpu-used", "5", "-pix_fmt", "yuv420p", "-an",
-            ])
-            .arg(&tmp)
-            .stdin(Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success());
-        if !(ok && std::fs::rename(&tmp, &out).is_ok()) {
+        let ok = run(
+            Command::new("nice")
+                .args(["-n", "19", "ffmpeg", "-nostdin", "-v", "error", "-y", "-i"])
+                .arg(&src)
+                .args([
+                    "-vf", &filter, "-c:v", "libvpx-vp9", "-crf", "34", "-b:v", "0", "-row-mt", "1",
+                    "-deadline", "good", "-cpu-used", "5", "-pix_fmt", "yuv420p", "-an",
+                ])
+                .arg(&tmp),
+            TRANSCODE_LIMIT,
+        );
+        if !(ok && reusable(&tmp) && std::fs::rename(&tmp, &out).is_ok()) {
             let _ = std::fs::remove_file(&tmp);
         }
-        TRANSCODING.store(false, Ordering::Release);
     });
 }
 
@@ -718,6 +802,59 @@ mod tests {
         assert_eq!(Blur::new(30, 0.601), Blur::new(30, 0.604));
         assert_ne!(Blur::new(30, 0.601), Blur::new(30, 0.62));
         assert_eq!(Blur::new(30, 1.7).brightness, 100);
+    }
+
+    // DS-11: a cut-off or emptied cache file is made again, not reused.
+    #[test]
+    fn broken_cache_files_are_remade() {
+        let (dir, cache) = scratch("broken");
+        let src = dir.join("big.png");
+        image::RgbImage::new(4000, 2000).save(&src).unwrap();
+        let job = blur_job(&src, &cache, Blur::new(30, 0.6));
+        let first = prepare(&job).unwrap();
+        let (pic, blurred) = (first.picture.unwrap(), first.blurred.unwrap());
+        let whole = std::fs::read(&pic).unwrap();
+        std::fs::write(&pic, &whole[..whole.len() / 2]).unwrap();
+        std::fs::write(&blurred, b"").unwrap();
+        let again = prepare(&job).unwrap();
+        assert_eq!(again.picture.as_ref(), Some(&pic));
+        assert!(image::open(&pic).is_ok(), "picture remade whole");
+        assert!(image::open(again.blurred.unwrap()).is_ok(), "blur remade");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // DS-14: trimming never deletes what prepare is about to return.
+    #[test]
+    fn result_survives_a_tiny_budget() {
+        let (dir, cache) = scratch("tiny");
+        let src = dir.join("big.png");
+        image::RgbImage::new(4000, 2000).save(&src).unwrap();
+        let mut job = blur_job(&src, &cache, Blur::new(30, 0.6));
+        job.cache_bytes = 1;
+        let p = prepare(&job).unwrap();
+        assert!(p.picture.unwrap().exists());
+        assert!(p.blurred.unwrap().exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // DS-12: a video ffmpeg can't read is refused, not played.
+    #[test]
+    fn unreadable_video_is_an_error() {
+        let (dir, cache) = scratch("video");
+        let src = dir.join("empty.mp4");
+        std::fs::write(&src, b"").unwrap();
+        let job = Job { blur: None, ..blur_job(&src, &cache, Blur::new(30, 0.6)) };
+        assert!(prepare(&job).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // DS-08: a stuck helper is stopped at its deadline.
+    #[test]
+    fn stuck_commands_are_killed() {
+        let start = Instant::now();
+        assert!(!run(Command::new("sleep").arg("30"), Duration::from_millis(300)));
+        assert!(start.elapsed() < Duration::from_secs(5));
+        assert!(run(&mut Command::new("true"), Duration::from_secs(5)));
     }
 
     // SB-14: abandoned temporary files don't pile up.
