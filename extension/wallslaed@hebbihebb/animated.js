@@ -3,7 +3,9 @@
 // and show them through clones inside the desktop background actors. The player
 // only runs while an animated wallpaper is current, and it gets paused whenever
 // nobody can see it. Music videos are the exception: they play with sound, and
-// only the user pauses them.
+// only the user pauses them. Either way, a monitor covered by a maximized or
+// fullscreen window loses its clone, so the shell stops redrawing a picture no
+// one sees (5% of a core for a 1080p30 music video).
 
 import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
@@ -43,6 +45,7 @@ export class AnimatedHost extends Signals.EventEmitter {
         // Players told to quit that haven't exited yet.
         this._retiring = new Set();
         this._clones = new Map(); // monitor index -> Clutter.Clone
+        this._covered = new Set(); // monitor indices with no clone shown
         this._bgSignals = [];
         this._signals = [];
         this._checkId = 0;
@@ -323,7 +326,7 @@ export class AnimatedHost extends Signals.EventEmitter {
         const source = this._player?.actors.get(index);
         const mgr = Main.layoutManager._bgManagers[index];
         const monitor = Main.layoutManager.monitors[index];
-        if (!source || !mgr || !monitor)
+        if (!source || !mgr || !monitor || this._covered.has(index))
             return;
 
         this._clones.get(index)?.destroy();
@@ -344,6 +347,22 @@ export class AnimatedHost extends Signals.EventEmitter {
         for (const clone of [...this._clones.values()])
             clone.destroy();
         this._clones.clear();
+        this._covered.clear();
+    }
+
+    // Show clones only on monitors not covered by a window.
+    _syncClones(covered) {
+        covered.forEach((isCovered, index) => {
+            if (isCovered === this._covered.has(index))
+                return;
+            if (isCovered) {
+                this._covered.add(index);
+                this._clones.get(index)?.destroy();
+            } else {
+                this._covered.delete(index);
+                this._attach(index);
+            }
+        });
     }
 
     _queueCheck() {
@@ -357,13 +376,17 @@ export class AnimatedHost extends Signals.EventEmitter {
     }
 
     _updatePlayback() {
+        if (!this._player)
+            return;
+        const monitors = this._coveredMonitors();
+        this._syncClones(monitors);
         // Music videos keep playing behind windows; the user pauses them.
-        if (!this._player || this._player.audio)
+        if (this._player.audio)
             return;
         const onBattery = this._settings.get_boolean('animated-pause-on-battery') &&
             this._upower?.OnBattery === true;
         const covered = this._settings.get_boolean('animated-pause-when-covered') &&
-            this._desktopCovered();
+            monitors.every(Boolean);
         const pause = onBattery || covered;
         if (pause !== this._paused) {
             this._paused = pause;
@@ -371,7 +394,9 @@ export class AnimatedHost extends Signals.EventEmitter {
         }
     }
 
-    _desktopCovered() {
+    // Per monitor: whether a maximized or fullscreen window on the active
+    // workspace hides the desktop.
+    _coveredMonitors() {
         const n = global.display.get_n_monitors();
         const covered = new Array(n).fill(false);
         const workspace = global.workspace_manager.get_active_workspace();
@@ -382,7 +407,7 @@ export class AnimatedHost extends Signals.EventEmitter {
             if (m >= 0 && m < n && (w.is_fullscreen() || w.is_maximized()))
                 covered[m] = true;
         }
-        return covered.every(Boolean);
+        return covered;
     }
 
     destroy() {
