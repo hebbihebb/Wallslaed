@@ -1,5 +1,6 @@
 //! Turning a wallpaper file into something cheap for the compositor to show.
-//! Runs on a worker thread; never touches GLib objects.
+//! Runs on a worker thread; the only GLib objects it touches are glycin's own,
+//! on a main context of their own.
 
 use std::fs::File;
 use std::hash::{Hash, Hasher};
@@ -85,35 +86,46 @@ fn prepare_static(job: &Job, key: &str) -> Result<Prepared, String> {
     }
 
     let (sw, sh) = (job.screen.0.max(1) as f64, job.screen.1.max(1) as f64);
-    let Ok((w, h)) = reader(src).and_then(|r| r.into_dimensions().map_err(|e| e.to_string()))
-    else {
-        // Formats we can't read (AVIF, HEIC, JXL...) go to GNOME untouched.
-        return Ok(done(src.to_path_buf()));
-    };
     // Smallest size that still covers the screen ("zoom" in GNOME terms).
-    let scale = (sw / w as f64).max(sh / h as f64);
-    if scale * SCALE_SLACK >= 1.0 {
-        return Ok(done(src.to_path_buf()));
-    }
+    let cover = |w: u32, h: u32| (sw / w as f64).max(sh / h as f64);
+    let img = match reader(src).and_then(|r| r.into_dimensions().map_err(|e| e.to_string())) {
+        Ok((w, h)) => {
+            if cover(w, h) * SCALE_SLACK >= 1.0 {
+                return Ok(done(src.to_path_buf()));
+            }
+            let mut decoder = reader(src)?.into_decoder().map_err(|e| e.to_string())?;
+            let orientation = decoder.orientation().map_err(|e| e.to_string())?;
+            let mut img = DynamicImage::from_decoder(decoder).map_err(|e| e.to_string())?;
+            img.apply_orientation(orientation);
+            DynamicImage::ImageRgb8(img.into_rgb8())
+        }
+        // JXL, AVIF, HEIC...: GNOME would decode these itself, which costs
+        // GNOME Shell far more than a JPEG, so they become one at any size.
+        Err(_) => match decode_glycin(src) {
+            Ok(img) => img,
+            Err(e) => {
+                eprintln!("wallslaed: can't decode {}: {e}", src.display());
+                return Ok(done(src.to_path_buf()));
+            }
+        },
+    };
 
-    let mut decoder = reader(src)?.into_decoder().map_err(|e| e.to_string())?;
-    let orientation = decoder.orientation().map_err(|e| e.to_string())?;
-    let mut img = DynamicImage::from_decoder(decoder).map_err(|e| e.to_string())?;
-    img.apply_orientation(orientation);
-    let img = DynamicImage::ImageRgb8(img.into_rgb8());
-
-    let s = (sw / img.width() as f64).max(sh / img.height() as f64);
+    let s = cover(img.width(), img.height()).min(1.0);
     let tw = ((img.width() as f64 * s).round() as u32).max(1);
     let th = ((img.height() as f64 * s).round() as u32).max(1);
-    let mut dst = DynamicImage::new_rgb8(tw, th);
-    Resizer::new()
-        .resize(
-            &img,
-            &mut dst,
-            &ResizeOptions::new().resize_alg(ResizeAlg::Convolution(FilterType::Lanczos3)),
-        )
-        .map_err(|e| e.to_string())?;
-    drop(img);
+    let dst = if (tw, th) == (img.width(), img.height()) {
+        img
+    } else {
+        let mut dst = DynamicImage::new_rgb8(tw, th);
+        Resizer::new()
+            .resize(
+                &img,
+                &mut dst,
+                &ResizeOptions::new().resize_alg(ResizeAlg::Convolution(FilterType::Lanczos3)),
+            )
+            .map_err(|e| e.to_string())?;
+        dst
+    };
 
     let tmp = out.with_extension("jpg.part");
     {
@@ -201,6 +213,33 @@ fn transcode_gif_later(src: PathBuf, out: PathBuf, max_width: u32) {
     });
 }
 
+/// Decodes with glycin, the sandboxed loaders GNOME itself uses, into RGB with
+/// the orientation and colour profile applied.
+fn decode_glycin(src: &Path) -> Result<DynamicImage, String> {
+    let mut loader = glycin::Loader::new(gio::File::for_path(src));
+    loader
+        .accepted_memory_formats(glycin::MemoryFormatSelection::R8g8b8)
+        // Not the daemon's main loop: this thread blocks until it's done.
+        .main_context_selector(glycin::MainContextSelector::Managed);
+    let frame = glib::MainContext::new().block_on(async move {
+        let mut image = loader.load().await.map_err(|e| e.to_string())?;
+        image.next_frame().await.map_err(|e| e.to_string())
+    })?;
+    if frame.memory_format() != glycin::MemoryFormat::R8g8b8 {
+        return Err(format!("unexpected memory format {:?}", frame.memory_format()));
+    }
+    let (w, h, stride) = (frame.width(), frame.height(), frame.stride() as usize);
+    let row = w as usize * 3;
+    let buf = frame.buf_slice();
+    let mut rgb = Vec::with_capacity(row * h as usize);
+    for y in 0..h as usize {
+        rgb.extend_from_slice(buf.get(y * stride..y * stride + row).ok_or("short frame")?);
+    }
+    image::RgbImage::from_raw(w, h, rgb)
+        .map(DynamicImage::ImageRgb8)
+        .ok_or_else(|| "bad frame size".to_owned())
+}
+
 fn reader(src: &Path) -> Result<ImageReader<std::io::BufReader<File>>, String> {
     ImageReader::open(src)
         .and_then(|r| r.with_guessed_format())
@@ -274,6 +313,42 @@ mod tests {
 
         let out = prepare(&job(&small)).unwrap();
         assert_eq!(out.picture.unwrap(), small, "small images are used as-is");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // Needs ffmpeg with libjxl to make the files, and glycin's JXL loader.
+    #[test]
+    fn converts_jxl_to_jpeg() {
+        let dir = std::env::temp_dir().join(format!("wallslaed-jxl-{}", std::process::id()));
+        let cache = dir.join("cache");
+        std::fs::create_dir_all(&dir).unwrap();
+        let make = |name: &str, size: &str| {
+            let path = dir.join(name);
+            let ok = Command::new("ffmpeg")
+                .args(["-loglevel", "error", "-y", "-f", "lavfi", "-i"])
+                .arg(format!("testsrc2=size={size}"))
+                .args(["-frames:v", "1", "-c:v", "libjxl"])
+                .arg(&path)
+                .status()
+                .is_ok_and(|s| s.success());
+            ok.then_some(path)
+        };
+        let (Some(big), Some(small)) = (make("big.jxl", "4000x2000"), make("small.jxl", "1000x500"))
+        else {
+            eprintln!("skipped: ffmpeg can't write JXL");
+            return;
+        };
+        let job = |p: &Path| Job {
+            source: p.to_str().unwrap().into(),
+            screen: (1920, 1080),
+            prescale: true,
+            cache_dir: cache.clone(),
+        };
+        for (src, size) in [(&big, (2160, 1080)), (&small, (1000, 500))] {
+            let pic = prepare(&job(src)).unwrap().picture.unwrap();
+            assert!(pic.starts_with(&cache), "{} becomes a cached JPEG", src.display());
+            assert_eq!(image::image_dimensions(&pic).unwrap(), size, "{}", src.display());
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

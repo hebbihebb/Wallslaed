@@ -26,6 +26,7 @@ Wallpapers are shuffled into a "bag":
 ### Staying light
 - The daemon runs one event loop with no polling. It wakes for the timer, a D-Bus call, or a file change in the folder, and is idle otherwise.
 - Images larger than the screen are scaled once to screen size and cached in `~/.cache/wallslaed`, which keeps the newest 40 files. An 8K image would otherwise sit in the compositor as a ~130 MB texture.
+- JPEG XL, AVIF and HEIC wallpapers always become a cached JPEG, at screen size or smaller, decoded with glycin (GNOME's own sandboxed image loaders). GNOME Shell decoding them itself stalled the desktop for up to a second on 5K JPEG XL files.
 - The next wallpaper is prepared ahead of time, so switching is instant.
 - Transition effects are attached for the length of the transition and then removed.
 - The timer pauses while the screen is locked, and changes once on unlock if it missed a tick.
@@ -43,6 +44,8 @@ Wallpapers are shuffled into a "bag":
 - Where each video was left off is saved every 15 seconds (`~/.local/state/wallslaed/media.json`), so locking the screen or logging out resumes it.
 
 ## Install
+
+Needs GNOME Shell 51 (Fedora 45), a Rust toolchain, and for building the daemon `libseccomp-devel` and `fontconfig-devel`; `glycin-loaders` and `bubblewrap` come with GNOME.
 
 ```sh
 ./install.sh
@@ -70,6 +73,7 @@ Remove it with `./uninstall.sh`. Add `--purge` to also forget settings, favorite
   - Pause Rotation
   - Music Videos ▸ (pick one to play)
   - while one plays: Pause/Play Music, Mute, Stop Music Video
+  - Wallslæd Settings (GNOME's own *Settings* below it opens GNOME Settings)
 - **Settings** (`gnome-extensions prefs wallslaed@hebbihebb`):
   - *Wallpapers:* folder, timer, transitions, animated wallpaper options
   - *Music Videos:* paste a link to download, play or delete saved videos, volume, download quality
@@ -106,4 +110,4 @@ data/       GSettings schema, systemd user unit
 tools/      isolated-session.sh: test without touching the real desktop
 ```
 
-`cargo test` runs the shuffle-bag, scanning, pre-scaling and download-parsing tests. Anything that needs GSettings, D-Bus or a GNOME Shell runs in a throwaway session: `tools/isolated-session.sh --install <scratch-dir> <script>` (see `AGENTS.md`).
+`cargo test` runs the shuffle-bag, scanning, pre-scaling (including JPEG XL through glycin, when `ffmpeg` can write it) and download-parsing tests. Anything that needs GSettings, D-Bus or a GNOME Shell runs in a throwaway session: `tools/isolated-session.sh --install <scratch-dir> <script>` (see `AGENTS.md`).

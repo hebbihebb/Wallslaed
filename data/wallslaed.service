@@ -12,7 +12,9 @@ RestartSec=5
 # Keep it light and out of the way of the desktop.
 Nice=10
 IOSchedulingClass=idle
-MemoryHigh=256M
+# Converting a 5.5K JPEG XL peaks around 320M with its glycin loader, which
+# runs in this unit too; it drops back to tens of MB right after.
+MemoryHigh=400M
 MemoryMax=600M
 
 [Install]

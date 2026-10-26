@@ -1,17 +1,32 @@
 # Current Tasks
 
-Last updated: 2026-10-26 (port to GNOME Shell 51 after the Fedora 45 upgrade).
+Last updated: 2026-10-26 (GNOME 51 port accepted; JPEG XL/AVIF/HEIC converted with glycin).
 
 ## Git state
 
 - `main`: accepted work, including the menu race fix and the new transitions (merged 2026-10-25), pushed to `origin`.
 - `fix/random-and-settings` (2026-10-26): off `main`, see below. Not merged; installed.
-- `fix/gnome-51` (2026-10-26): off `fix/random-and-settings`, the GNOME 51 port, see below. Not merged, not installed.
+- `fix/gnome-51` (2026-10-26): off `fix/random-and-settings`, the GNOME 51 port, see below. Installed and accepted; not merged.
+- `feature/glycin-prepare` (2026-10-26): off `fix/gnome-51`, see below. Not merged, not installed.
 - `feature/shell-blur`: shelved until the user has time to test it properly; see "Shelved" below. Not merged.
-- Installed in the live session: `fix/random-and-settings` (`5a7d4ac`). Since the Fedora 45 upgrade (GNOME Shell 51.0) the shell marks it OUT OF DATE and doesn't load it; the daemon still rotates wallpapers with GNOME's plain crossfade.
-- Backups: `~/.local/share/wallslaed-backups/installed-main-480b01e/` (the build before this fix), `installed-transitions-2026-10-25/`, `installed-main-761c5ae/` (the build before the new transitions) and `installed-2026-10-25/` (before the menu race fix); each has a `restore.sh`.
+- Installed in the live session: `fix/gnome-51` (`bf0d962`), installed 2026-10-26 on Fedora 45 / GNOME Shell 51.0.
+- Backups: `~/.local/share/wallslaed-backups/installed-random-settings-5a7d4ac/` (the last GNOME 50 build), `installed-main-480b01e/` (the build before this fix), `installed-transitions-2026-10-25/`, `installed-main-761c5ae/` (the build before the new transitions) and `installed-2026-10-25/` (before the menu race fix); each has a `restore.sh`.
 
-## In progress: `fix/gnome-51` (2026-10-26)
+## In progress: `feature/glycin-prepare` (2026-10-26)
+
+User report on the installed GNOME 51 build: the pointer "sticks to the menu for a second" on Next Wallpaper. Watching 34 real changes, GNOME Shell's CPU jumped to 50-78% for up to 1.5 s on JPEG XL wallpapers (401 of 1536 files, 4000-5500 px wide), which the daemon couldn't read and passed to GNOME untouched; most JPEG/WebP changes stayed under 40%. The screen is 3840x2160, so prescale rarely shrinks anything else.
+
+| Change | State |
+| --- | --- |
+| `prepare.rs`: formats the `image` crate can't read (JXL, AVIF, HEIC...) are decoded with the `glycin` crate (GNOME's sandboxed loaders, its own main context) and always written as a cached JPEG, scaled to cover the screen if larger | verified: unit test (5504 and 1000 px JXL); isolated session with three 5504x3072 JXL files: GNOME got only cached 3870x2160 JPEGs, conversion ~0.5 s off the main loop, the next one prepared ahead (0.02 s switch) |
+| `wallslaed.service`: `MemoryHigh` 256M to 400M (`MemoryMax` stays 600M) | measured: daemon + glycin-jxl loader peak ~320 MB per 5.5K JXL, back to ~34 MB after |
+| README: formats, build requirements, the Wallslæd Settings menu item | done |
+
+Cost: 136 more crates (zbus, moxcms, gufo...), links libseccomp and fontconfig; release binary 4.9 to 7.7 MB. Loader processes idle out after 30 s (glycin's pool).
+
+Not tested: AVIF and HEIC (only JXL generated), the real 4K desktop, whether the pointer stall is gone.
+
+## Accepted: `fix/gnome-51` (2026-10-26)
 
 The user upgraded to Fedora 45 (GNOME Shell 51.0, GTK 4.24, GStreamer 1.28). Researched beforehand in `ROADMAP.md`; the port:
 
@@ -27,7 +42,7 @@ Also verified headless: Random draws all twelve effects, the desktop menu's "Wal
 
 A headless GNOME Shell 51 segfaults on shutdown if a client window is still open (`gnome_shell_plugin_kill_window_effects`); it happens without Wallslæd too (`.scratch/gnome-51/baseline/`), so test scripts close windows before stopping the shell.
 
-Not tested: real NVIDIA rendering of the ported shaders, real clicks, the music video player on Fedora 45. `ptrace_scope` is 0 on this install, so `eu-stack` still works without `sudo`.
+User tested the installed build 2026-10-26: transitions look fine on the NVIDIA desktop, the menu works (also during a transition), music videos play. `ptrace_scope` is 0 on this install, so `eu-stack` still works without `sudo`.
 
 ## In progress: `fix/random-and-settings` (2026-10-26)
 
