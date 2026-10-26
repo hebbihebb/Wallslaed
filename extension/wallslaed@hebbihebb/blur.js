@@ -3,17 +3,24 @@
 // all that happens here is showing that tiny image scaled up: one texture per
 // monitor, shared by every surface, and no blur shader running. Only when
 // there is no baked copy (a format the daemon can't read, or no daemon) does
-// a GPU blur stand in, cached by Clutter until the next wallpaper.
+// a GPU blur stand in, cached by Clutter until the next wallpaper. It blurs
+// GNOME's own background object, so the full-size picture isn't loaded twice.
 
 import Clutter from 'gi://Clutter';
+import Cogl from 'gi://Cogl';
 import GDesktopEnums from 'gi://GDesktopEnums';
 import Gio from 'gi://Gio';
+import GLib from 'gi://GLib';
+import Glycin from 'gi://Gly';
 import Meta from 'gi://Meta';
 import Shell from 'gi://Shell';
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
 const FADE_MS = 300;
+
+Gio._promisify(Glycin.Loader.prototype, 'load_async');
+Gio._promisify(Glycin.Image.prototype, 'next_frame_async');
 
 // What the extension adds to GNOME's own styles, scoped by these classes.
 const OVERVIEW_CLASS = 'wallslaed-blur-overview';
@@ -26,8 +33,10 @@ export class BlurLayers {
         this._daemon = daemon;
         this._background = new Gio.Settings({schema_id: 'org.gnome.desktop.background'});
         this._source = null; // {file, gpu}
-        this._image = null; // Meta.BackgroundImage being waited for
-        this._imageId = 0;
+        this._cancellable = null; // a baked copy being loaded
+        this._gnomeBackground = null; // GNOME's background the GPU blur shows
+        this._gnomeIds = [];
+        this._reloadId = 0;
         // Per monitor: {content, gpu}. Surfaces show these.
         this._contents = [];
         this._overview = null; // {group, layers: [Layer]}
@@ -82,57 +91,105 @@ export class BlurLayers {
         const state = this._daemon.state;
         if (state?.blurred)
             return {file: Gio.File.new_for_path(state.blurred), gpu: false};
-        if (state?.picture)
-            return {file: Gio.File.new_for_path(state.picture), gpu: true};
         const uri = this._background.get_string('picture-uri');
-        return uri ? {file: Gio.File.new_for_uri(uri), gpu: true} : null;
+        return state?.picture || uri ? {file: null, gpu: true, picture: state?.picture ?? uri} : null;
     }
 
     _load(force = false) {
         if (!this._wanted)
             return;
         const source = this._pickSource();
-        if (!force && source?.gpu === this._source?.gpu &&
-            (source?.file.equal(this._source.file) ?? !this._source))
+        if (!force && source?.gpu === this._source?.gpu && source?.picture === this._source?.picture &&
+            (source?.file?.equal(this._source.file) ?? !this._source?.file))
             return;
         this._source = source;
-        this._cancelImage();
+        this._cancelLoad();
         // Nothing to show yet: keep whatever is up.
         if (!source)
             return;
-        // Wait for the image before swapping, so nothing flashes black.
-        const image = Meta.BackgroundImageCache.get_default().load(source.file);
-        if (image.is_loaded()) {
-            this._apply();
+        if (source.gpu)
+            this._loadGnomeBackground();
+        else
+            this._loadBaked(source);
+    }
+
+    // Wait for the image before swapping, so nothing flashes black.
+    async _loadBaked(source) {
+        const cancellable = this._cancellable = new Gio.Cancellable();
+        let loaded;
+        try {
+            loaded = await loadTexture(source.file, cancellable);
+        } catch (e) {
+            if (!e.matches?.(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED))
+                console.warn(`Wallslæd: can't load ${source.file.get_path()}: ${e.message}`);
             return;
         }
-        this._image = image;
-        this._imageId = image.connect('loaded', () => {
-            this._cancelImage();
-            this._apply();
+        if (cancellable.is_cancelled())
+            return;
+        this._cancellable = null;
+        const style = this._style();
+        this._apply(() => {
+            const background = new Meta.Background({meta_display: global.display});
+            background.set_texture(loaded.texture, style, loaded.colorState);
+            return background;
         });
     }
 
-    _cancelImage() {
-        if (this._imageId)
-            this._image.disconnect(this._imageId);
-        this._image = null;
-        this._imageId = 0;
+    // GNOME's own background object for the picture on screen, once loaded.
+    // GNOME replaces it on every change ('bg-changed'), so follow that.
+    _loadGnomeBackground() {
+        const backgroundSource = Main.layoutManager._bgManagers[0]?._backgroundSource;
+        const background = backgroundSource?.getBackground(0);
+        if (!background)
+            return;
+        this._gnomeBackground = background;
+        const on = (signal, fn) => this._gnomeIds.push(background.connect(signal, fn));
+        on('bg-changed', () => {
+            this._disconnectGnomeBackground();
+            // After GNOME has dropped it from its cache.
+            this._reloadId = GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+                this._reloadId = 0;
+                this._load(true);
+                return GLib.SOURCE_REMOVE;
+            });
+        });
+        const apply = () => this._apply(() => background);
+        if (background.isLoaded)
+            apply();
+        else
+            on('loaded', apply);
     }
 
-    _apply() {
+    _style() {
         const style = this._background.get_enum('picture-options');
+        return style === GDesktopEnums.BackgroundStyle.NONE ? GDesktopEnums.BackgroundStyle.ZOOM : style;
+    }
+
+    _apply(makeBackground) {
         this._contents = Main.layoutManager.monitors.map((_m, index) => {
             const content = Meta.BackgroundContent.new(global.display, index);
-            const background = new Meta.Background({meta_display: global.display});
-            background.set_file(this._source.file,
-                style === GDesktopEnums.BackgroundStyle.NONE
-                    ? GDesktopEnums.BackgroundStyle.ZOOM : style);
-            content.background = background;
+            content.background = makeBackground();
             return {content, gpu: this._source.gpu};
         });
         this._overview?.layers.forEach(layer => layer.show(this._contents[layer.index]));
         this._panel?.layer.show(this._contents[this._panel.layer.index]);
+    }
+
+    _disconnectGnomeBackground() {
+        for (const id of this._gnomeIds)
+            this._gnomeBackground.disconnect(id);
+        this._gnomeIds = [];
+        this._gnomeBackground = null;
+    }
+
+    _cancelLoad() {
+        this._cancellable?.cancel();
+        this._cancellable = null;
+        if (this._gnomeBackground)
+            this._disconnectGnomeBackground();
+        if (this._reloadId)
+            GLib.source_remove(this._reloadId);
+        this._reloadId = 0;
     }
 
     _effect() {
@@ -174,6 +231,8 @@ export class BlurLayers {
         wrapper.add_child(layer.actor);
         panelBox.insert_child_at_index(wrapper, 0);
         const place = () => {
+            if (!layer.actor)
+                return;
             // The panel box sits at the monitor's top-left corner.
             const [x, y] = [panelBox.x - monitor.x, panelBox.y - monitor.y];
             layer.actor.set_position(-x, -y);
@@ -205,7 +264,7 @@ export class BlurLayers {
     }
 
     _clearSource() {
-        this._cancelImage();
+        this._cancelLoad();
         this._source = null;
         this._contents = [];
     }
@@ -228,11 +287,13 @@ class Layer {
         this.index = index;
         this._makeEffect = makeEffect;
         this.actor = new Clutter.Actor({width: monitor.width, height: monitor.height});
+        // GNOME may destroy it first when the shell shuts down.
+        this.actor.connect('destroy', () => (this.actor = null));
         this._current = null;
     }
 
     show(entry) {
-        if (!entry)
+        if (!entry || !this.actor)
             return;
         const child = new Clutter.Actor({
             content: entry.content,
@@ -260,10 +321,29 @@ class Layer {
 
     // Everything under `child` is hidden by it.
     _dropBelow(child) {
-        for (const c of this.actor.get_children()) {
+        for (const c of this.actor?.get_children() ?? []) {
             if (c === child)
                 break;
             c.destroy();
         }
     }
+}
+
+// Loads an image into a texture the way GNOME 51's background cache does,
+// but without blocking: through glycin's sandboxed loaders.
+async function loadTexture(file, cancellable) {
+    const stream = await file.read_async(GLib.PRIORITY_DEFAULT, cancellable);
+    const loader = Glycin.Loader.new_for_stream(stream);
+    loader.set_accepted_memory_formats(Glycin.MemoryFormatSelection.R8G8B8);
+    const image = await loader.load_async(cancellable);
+    const frame = await image.next_frame_async(cancellable);
+    if (frame.get_memory_format() !== Glycin.MemoryFormat.R8G8B8)
+        throw new Error(`unexpected memory format ${frame.get_memory_format()}`);
+
+    const context = global.stage.context.get_backend().get_cogl_context();
+    const texture = Cogl.Texture2D.new_with_size(context, frame.get_width(), frame.get_height());
+    texture.set_components(Cogl.TextureComponents.RGB);
+    if (!texture.set_data(Cogl.PixelFormat.RGB_888, frame.get_stride(), frame.get_buf_bytes().get_data(), 0))
+        throw new Error('failed to set texture data');
+    return {texture, colorState: null};
 }
