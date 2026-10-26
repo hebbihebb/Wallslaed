@@ -18,6 +18,7 @@ Wallpapers are shuffled into a "bag":
 - The last few of one round can't come straight back at the start of the next.
 - **Favorites** show up more often (*Favorite Weight*), and **Never Show This Again** removes a file for good.
 - Position and history survive restarts (`~/.local/state/wallslaed/state.json`).
+- Saved state can't be recreated, so it is handled with care: writes go through a synced temporary file on a thread of their own (a stuck disk doesn't stop the daemon), and a failed write is retried and shown as `save-error` in the state. A file that can't be read is kept as `state.json.broken-<time>` and the copy taken at the last start (`state.json.bak`) is used; nothing overwrites it with an empty state. A wallpaper folder that can't be read (unplugged, unmounted) changes nothing and is looked for again every minute, and no scan ever removes favorites.
 
 ## Staying light
 
