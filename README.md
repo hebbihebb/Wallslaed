@@ -110,7 +110,8 @@ Each site needs a free API key, which you get by signing up on their website and
 On the **Appearance** page in the settings:
 
 - **Blur** gives the overview, the top bar, the dash, menus, quick settings, notifications, dialogs, app folders, the screenshot tool and the lock screen a blurred, frosted look. Set how strong and how dark it is, and switch any of those parts off.
-- **Hide Over Windows** makes the top bar slide away while a window touches it, so maximized windows get the whole screen. It comes back in the overview, and when you push the mouse against the top edge of the screen.
+- **Hide Over Windows** makes the top bar slide away while a window touches it, so maximized windows get the whole screen. It comes back in the overview, and when you push the mouse against the top edge of the screen (also over a fullscreen window).
+- **App Windows** sets how strongly GNOME blurs behind apps that ask for it, such as GTK 4 apps with see-through backgrounds and some terminals. It's a GNOME 51 feature; off leaves GNOME's own strength.
 
 The blur is built to be light. Instead of blurring your wallpaper over and over, Wallslæd makes one small blurred copy when the wallpaper changes and reuses it everywhere. Menus only blur what's behind them while they're open.
 
@@ -146,6 +147,9 @@ They pause while windows cover the screen, and on battery if that setting is on.
 
 **Blur or the top bar acts strangely.**
 Make sure Blur my Shell and Hide Top Bar are switched off; they try to do the same things.
+
+**The whole desktop freezes, usually while changing wallpapers quickly.**
+That's a bug in GNOME itself (in GJS, its JavaScript engine; [GJS merge request !1134](https://gitlab.gnome.org/GNOME/gjs/-/merge_requests/1134) fixes it, not released yet). It can happen whenever the wallpaper changes, with or without Wallslæd, and is likelier the faster wallpapers change. Wallslæd changes the wallpaper in one step to make it rarer. If it happens, switch to a text console (Ctrl+Alt+F3), log in and run `pkill -KILL -x gnome-shell`, then go back with Ctrl+Alt+F2. That ends your session like a logout, so unsaved work in open apps is lost; restarting the computer does the same.
 
 ## Uninstall
 

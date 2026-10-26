@@ -6,7 +6,7 @@ Nothing is scheduled. Items here are ideas to look into; each needs the user's g
 
 The port itself moved to `CURRENT_TASKS.md` (`fix/gnome-51`). Still open:
 
-- **`feature/shell-blur` on GNOME 51:** besides the port's changes (`close({animate: false})`, metadata), recheck `liveBlur.js`'s overrides against 51; `Shell.BlurEffect`, `UnlockDialog._updateBackgroundEffects` and `PopupMenuManager.addMenu` still exist.
+- **GJS wallpaper-change deadlock** (see `docs/how-it-works.md`): when GJS !1134 is released, check the Fedora package, re-run `.scratch/blur51/baseline/test.sh` (two writes, 0.35 s), and drop the README's freeze note. Until then, consider reporting the headless reproduction (GNOME Shell alone, no extensions) on that merge request.
 - **Glycin wallpaper loading** (GNOME 51 loads backgrounds through `BackgroundTextureCache`): check by eye that AVIF and HEIC wallpapers show (JXL ones rotate in), and how long very large images take.
 
 ## Research

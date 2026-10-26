@@ -1,13 +1,13 @@
 # Current Tasks
 
-Last updated: 2026-10-26 (shell blur resumed on GNOME 51; `main` merged into `feature/shell-blur`).
+Last updated: 2026-10-26 (shell blur ported to GNOME 51, popup boxes fixed, all 14 audit findings fixed, app-window blur; GNOME deadlock found).
 
 ## Git state
 
 - `main`: accepted work, including the Random/settings fix, the GNOME 51 port and the glycin conversion (merged 2026-10-26), pushed to `origin`.
 - `fix/random-and-settings`, `fix/gnome-51`, `feature/glycin-prepare`: merged into `main` (fast-forward) and pushed.
-- `feature/shell-blur`: resumed 2026-10-26 for GNOME 51, `main` merged in; see below. Not merged, not installed.
-- `codex/audit-shell-blur`: the Codex audit report (`0402ef0`); delete once its findings are fixed.
+- `feature/shell-blur`: resumed 2026-10-26 for GNOME 51, `main` merged in, all planned steps implemented and verified headless; see below. Not merged, not installed, not pushed since `5a25d8a`.
+- `codex/audit-shell-blur`: the Codex audit report (`0402ef0`); all 14 findings fixed, ready to delete once the user agrees.
 - Installed in the live session: `main` as of `f1f3137` (`feature/glycin-prepare`), installed 2026-10-26 on Fedora 45 / GNOME Shell 51.0.
 - Backups: `~/.local/share/wallslaed-backups/installed-gnome51-bf0d962/` (before the glycin conversion), `installed-random-settings-5a7d4ac/` (the last GNOME 50 build), `installed-main-480b01e/` (the build before this fix), `installed-transitions-2026-10-25/`, `installed-main-761c5ae/` (the build before the new transitions) and `installed-2026-10-25/` (before the menu race fix); each has a `restore.sh`.
 
@@ -57,6 +57,24 @@ Not tested: real mouse clicks, the new effects on NVIDIA in the Random rotation.
 ## In progress: shell blur and top-bar autohide (`feature/shell-blur`, 2026-10-26)
 
 Resumed 2026-10-26 on GNOME 51. Plan approved: `~/.claude/plans/squishy-hugging-cloud.md` (merge `main`, popup blur rework for the hover boxes, all 14 audit findings SB-01..SB-14 from `AUDIT.md`, GNOME 51 app-window blur setting). The original plan: `~/.claude/plans/there-is-another-extension-woolly-hejlsberg.md`.
+
+### 2026-10-26 work on GNOME 51 (`e2fb252`..)
+
+| Step | State |
+| --- | --- |
+| Merge `main` (GNOME 51 port, glycin, Random/settings) | committed `e2fb252`; build, 25 tests, schema |
+| `blur.js` on GNOME 51: `Meta.BackgroundImageCache` is gone (extension went to ERROR); baked blur loaded with glycin async, GPU fallback blurs GNOME's own background | verified headless (screenshots of overview, top bar, menu, quick settings; JXL wallpaper baked) |
+| Popup boxes on hover (user report): one blur per popup, whole rectangle redrawn while in use, partial redraws followed up; tint follows brightness (SB-11, SB-10, SB-01) | verified headless: pointer sweep 169 frames, 0 partially redrawn blurs; 0 frames when idle; corners clean; settings in place; screenshot/disable race clean |
+| Top bar: fullscreen reveal, leave on any monitor, all the app's windows (SB-07..09) | verified headless, 2 monitors, two-window GTK app; hot-corner gap 100 px |
+| Daemon blur bake (SB-02..06, SB-13, SB-14) | 5 unit tests; SB-05/06 against the running daemon with a slowed ffmpeg |
+| GPU fallback once per monitor (SB-12) | verified headless: 2 sources, 3 clones, old ones gone after changes |
+| App-window blur (GNOME 51 `set_background_blur_params`), `blur-apps`/`blur-apps-strength`, Appearance page | verified headless with a GTK 4 `backdrop-filter` window: 24/60/4/24 on disable |
+| Both picture keys in one write (GNOME deadlock mitigation, below) | verified: baseline 4/4 hangs with two writes, 0/3 with one |
+| Regression: 60 changes 1.5 s apart, 50 menus with pointer motion, 30 disable/enable, 10 lock/unlock, preferences | actors 2109 -> 2044, shell +31 MB then flat, no JS errors |
+
+**GNOME deadlock (not ours):** GNOME Shell 51 / GJS 1.90 can hang for good when a wallpaper change's settings signal meets the garbage collector freeing the replaced background (GJS MR !1134, open). Plain GNOME without Wallslæd hung within 20-100 changes at 0.35 s in 4 of 4 runs. Very likely the unexplained freeze of 2026-10-25. Details in `docs/how-it-works.md`; README has user advice. During this, a test script attached `eu-stack` to the user's real GNOME Shell by mistake (see AGENTS.md lessons); it kept running.
+
+Not tested: real NVIDIA rendering of everything above, real mouse pressure at the edge, a real lock/unlock with a password, physical monitor hotplug, HiDPI scale 2 (the user's), AVIF/HEIC.
 
 User test of `a62229a` on GNOME 50 (2026-10-26), before it was shelved:
 
