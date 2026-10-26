@@ -1,16 +1,20 @@
-// Uploads the next wallpaper ahead of time, so changing it doesn't stall the
-// compositor. GNOME 51 decodes a new wallpaper synchronously and uploads it to
-// the GPU in one call, on the compositor's own thread: 125-155 ms at 4K, even
-// with transitions off. The daemon announces the picture it will show next
-// (`next-picture`); it is decoded here through glycin's async loaders and
+// Loads wallpapers without stalling the compositor. GNOME 51 decodes a new
+// wallpaper synchronously and uploads it to the GPU in one call, on the
+// compositor's own thread: 125-155 ms at 4K, even with transitions off. The
+// daemon announces the pictures Next and Previous would show (`next-picture`,
+// `previous-picture`); they are decoded here through glycin's async loaders and
 // uploaded a few rows at a time while the shell is idle. When GNOME then loads
-// that file, it gets the finished texture instead of loading it itself.
+// one, it gets the finished texture. Any other picture is loaded the same way
+// on demand, so it shows up a moment later instead of freezing the screen.
 //
 // Everything else stays GNOME's: the settings, its Background objects, the
-// actor swap the transitions hook into. A file this didn't prepare (the first
-// one after login, Previous, a format it doesn't handle) loads as before.
-// Textures prepared here never enter GNOME's texture cache, which keeps every
-// wallpaper ever shown on the GPU; this keeps only the current and next ones.
+// actor swap the transitions hook into. Only the first wallpaper after login
+// (loaded before the extension starts) and pictures this fails to load go
+// through GNOME's own loader.
+//
+// Textures loaded here never enter GNOME's texture cache, which keeps every
+// wallpaper it has loaded on the GPU for the rest of the session (2 GB after
+// 64 4K wallpapers); this keeps only the current, next and previous ones.
 
 import Clutter from 'gi://Clutter';
 import Cogl from 'gi://Cogl';
@@ -31,27 +35,28 @@ const ROWS = 16;
 const BURST_MS = 2;
 const INTERVAL_MS = 8;
 
-// The 8-bit memory formats GNOME accepts from glycin. GNOME also accepts 16-bit
-// and float ones, so glycin is asked for all of them (never converting an
-// image GNOME would show at full depth), and those are left to GNOME.
+// The memory formats GNOME 51 accepts from glycin, and their Cogl formats.
 const M = Glycin.MemoryFormat;
 const S = Glycin.MemoryFormatSelection;
 const P = Cogl.PixelFormat;
 const FORMATS = [
-    [M.R8G8B8, S.R8G8B8, P.RGB_888, false],
-    [M.B8G8R8, S.B8G8R8, P.BGR_888, false],
-    [M.R8G8B8A8, S.R8G8B8A8, P.RGBA_8888, true],
-    [M.B8G8R8A8, S.B8G8R8A8, P.BGRA_8888, true],
-    [M.A8R8G8B8, S.A8R8G8B8, P.ARGB_8888, true],
-    [M.A8B8G8R8, S.A8B8G8R8, P.ABGR_8888, true],
-    [M.R8G8B8A8_PREMULTIPLIED, S.R8G8B8A8_PREMULTIPLIED, P.RGBA_8888_PRE, true],
-    [M.B8G8R8A8_PREMULTIPLIED, S.B8G8R8A8_PREMULTIPLIED, P.BGRA_8888_PRE, true],
-    [M.A8R8G8B8_PREMULTIPLIED, S.A8R8G8B8_PREMULTIPLIED, P.ARGB_8888_PRE, true],
+    [M.B8G8R8A8_PREMULTIPLIED, S.B8G8R8A8_PREMULTIPLIED, P.BGRA_8888_PRE],
+    [M.A8R8G8B8_PREMULTIPLIED, S.A8R8G8B8_PREMULTIPLIED, P.ARGB_8888_PRE],
+    [M.R8G8B8A8_PREMULTIPLIED, S.R8G8B8A8_PREMULTIPLIED, P.RGBA_8888_PRE],
+    [M.B8G8R8A8, S.B8G8R8A8, P.BGRA_8888],
+    [M.A8R8G8B8, S.A8R8G8B8, P.ARGB_8888],
+    [M.R8G8B8A8, S.R8G8B8A8, P.RGBA_8888],
+    [M.A8B8G8R8, S.A8B8G8R8, P.ABGR_8888],
+    [M.R8G8B8, S.R8G8B8, P.RGB_888],
+    [M.B8G8R8, S.B8G8R8, P.BGR_888],
+    [M.R16G16B16A16_PREMULTIPLIED, S.R16G16B16A16_PREMULTIPLIED, P.RGBA_16161616_PRE],
+    [M.R16G16B16A16, S.R16G16B16A16, P.RGBA_16161616],
+    [M.R16G16B16A16_FLOAT, S.R16G16B16A16_FLOAT, P.RGBA_FP_16161616],
+    [M.R32G32B32A32_FLOAT_PREMULTIPLIED, S.R32G32B32A32_FLOAT_PREMULTIPLIED, P.RGBA_FP_32323232_PRE],
+    [M.R32G32B32A32_FLOAT, S.R32G32B32A32_FLOAT, P.RGBA_FP_32323232],
 ];
-const ACCEPTED = FORMATS.reduce((all, [, selection]) => all | selection,
-    S.R16G16B16A16_PREMULTIPLIED | S.R16G16B16A16 | S.R16G16B16A16_FLOAT |
-    S.R32G32B32A32_FLOAT_PREMULTIPLIED | S.R32G32B32A32_FLOAT);
-const COGL_FORMATS = new Map(FORMATS.map(([memory, , cogl, alpha]) => [memory, [cogl, alpha]]));
+const ACCEPTED = FORMATS.reduce((all, [, selection]) => all | selection, 0);
+const COGL_FORMATS = new Map(FORMATS.map(([memory, , cogl]) => [memory, cogl]));
 
 const now = () => GLib.get_monotonic_time() / 1000;
 
@@ -61,7 +66,8 @@ export class Preloader {
         this._injections = injections;
         // True while a transition runs; uploads wait for it to end.
         this._busy = busy;
-        // uri -> Entry: the next picture, and the current one once shown.
+        // uri -> Entry: the next and previous pictures, the current one once
+        // shown, and pictures GNOME asked for that are still loading.
         this._entries = new Map();
         this._hooked = false;
 
@@ -101,9 +107,14 @@ export class Preloader {
 
     // The finished texture for `file`, or null to let GNOME load it.
     async _take(file) {
-        const entry = this._entries.get(file.get_uri());
-        if (!entry)
-            return null;
+        const uri = file.get_uri();
+        let entry = this._entries.get(uri);
+        if (!entry) {
+            // Not prepared: load it now, without waiting for transitions.
+            entry = new Entry(file, () => false);
+            entry.demanded = true;
+            this._entries.set(uri, entry);
+        }
         try {
             await entry.ready;
             // Rewritten since it was prepared (GNOME reloads on file changes).
@@ -111,27 +122,45 @@ export class Preloader {
                 Gio.FileQueryInfoFlags.NONE, GLib.PRIORITY_DEFAULT, null);
             if (info.get_etag() !== entry.etag)
                 throw new Error('changed on disk');
-            return entry.texture ? entry : null;
+            if (!entry.texture)
+                return null;
+            // GNOME's Background holds the texture from here; keep it only
+            // if the daemon still has a use for it.
+            entry.demanded = false;
+            if (!this._wanted().has(uri))
+                this._entries.delete(uri);
+            return entry;
         } catch (e) {
             if (!e.matches?.(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED))
                 console.warn(`Wallslæd: not preloaded ${file.get_path()}: ${e.message}`);
-            this._drop(file.get_uri());
+            if (this._entries.get(uri) === entry)
+                this._drop(uri);
             return null;
         }
     }
 
-    // Keep the current and next pictures, prepare the next one.
+    // The pictures on screen or one step away.
+    _wanted() {
+        const state = this._daemon.state;
+        return new Set([state?.picture, state?.['next-picture'], state?.['previous-picture']]
+            .filter(path => path)
+            .map(path => Gio.File.new_for_path(path).get_uri()));
+    }
+
+    // Keep the current, next and previous pictures; prepare the next and
+    // previous ones.
     _sync() {
         const state = this._daemon.state;
-        const uri = path => path ? Gio.File.new_for_path(path).get_uri() : null;
-        const current = uri(state?.picture);
-        const next = uri(state?.['next-picture']);
-        for (const key of [...this._entries.keys()]) {
-            if (key !== current && key !== next)
+        const wanted = this._wanted();
+        for (const [key, entry] of [...this._entries]) {
+            if (!wanted.has(key) && !entry.demanded)
                 this._drop(key);
         }
-        if (next && !this._entries.has(next))
-            this._entries.set(next, new Entry(Gio.File.new_for_uri(next), this._busy));
+        for (const path of [state?.['next-picture'], state?.['previous-picture']]) {
+            const file = path ? Gio.File.new_for_path(path) : null;
+            if (file && !this._entries.has(file.get_uri()))
+                this._entries.set(file.get_uri(), new Entry(file, this._busy));
+        }
     }
 
     _drop(uri) {
@@ -152,6 +181,8 @@ export class Preloader {
 class Entry {
     constructor(file, busy) {
         this.texture = null;
+        // Asked for by GNOME and still loading: kept until it is handed over.
+        this.demanded = false;
         this.colorState = null;
         this.etag = null;
         this._busy = busy;
@@ -173,18 +204,27 @@ class Entry {
         const image = await loader.load_async(cancellable);
         const frame = await image.next_frame_async(cancellable);
 
-        const [coglFormat, alpha] = COGL_FORMATS.get(frame.get_memory_format()) ?? [];
+        const memoryFormat = frame.get_memory_format();
+        const coglFormat = COGL_FORMATS.get(memoryFormat);
         if (coglFormat === undefined)
-            throw new Error(`memory format ${frame.get_memory_format()} left to GNOME`);
+            throw new Error(`unexpected memory format ${memoryFormat}`);
         const colorState = colorStateOf(frame);
 
+        // As GNOME 51 makes them, including the sliced fallback for pictures
+        // too large for one texture.
         const width = frame.get_width();
         const height = frame.get_height();
+        const components = Glycin.memory_format_has_alpha(memoryFormat)
+            ? Cogl.TextureComponents.RGBA : Cogl.TextureComponents.RGB;
         const context = global.stage.context.get_backend().get_cogl_context();
-        const texture = Cogl.Texture2D.new_with_size(context, width, height);
-        texture.set_components(alpha ? Cogl.TextureComponents.RGBA : Cogl.TextureComponents.RGB);
-        // Too large for one texture: GNOME falls back to a sliced one.
-        texture.allocate();
+        let texture = Cogl.Texture2D.new_with_size(context, width, height);
+        texture.set_components(components);
+        try {
+            texture.allocate();
+        } catch {
+            texture = Cogl.Texture2DSliced.new_with_size(context, width, height, Cogl.TEXTURE_MAX_WASTE);
+            texture.set_components(components);
+        }
 
         // Dropped while glycin finished decoding.
         cancellable.set_error_if_cancelled();

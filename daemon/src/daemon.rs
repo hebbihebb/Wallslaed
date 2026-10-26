@@ -76,9 +76,10 @@ struct Daemon {
     bag: Bag,
     rng: fastrand::Rng,
     current: Option<Prepared>,
-    preloaded: Option<Prepared>,
-    /// The source being preloaded right now, so it isn't started twice.
-    preloading: Option<String>,
+    /// The next and previous wallpapers, prepared ahead of time.
+    preloaded: Vec<Prepared>,
+    /// Sources being preloaded right now, so none is started twice.
+    preloading: Vec<String>,
     /// Bumped on every user-visible change so stale worker results are dropped.
     generation: u64,
     /// Bumped on every rebake, so only the newest one's result is used.
@@ -146,8 +147,8 @@ pub fn run() -> Result<(), String> {
         bag,
         rng: fastrand::Rng::new(),
         current: None,
-        preloaded: None,
-        preloading: None,
+        preloaded: Vec::new(),
+        preloading: Vec::new(),
         generation: 0,
         blur_generation: 0,
         rebake_timer: None,
@@ -240,7 +241,7 @@ fn on_bus(d: &Shared, conn: gio::DBusConnection) {
                 let mut s = d1.borrow_mut();
                 if s.screen != screen {
                     s.screen = screen;
-                    s.preloaded = None;
+                    s.preloaded.clear();
                 }
             },
         );
@@ -382,7 +383,7 @@ fn connect_settings(d: &Shared) {
             emit_changed(&d1);
         }
         "prescale" => {
-            d1.borrow_mut().preloaded = None;
+            d1.borrow_mut().preloaded.clear();
             advance(&d1, Step::Reload);
         }
         "blur-strength" | "blur-brightness" | "blur-overview" | "blur-panel" => queue_rebake(&d1),
@@ -434,7 +435,7 @@ fn rescan(d: &Shared, startup: bool) {
             s.bag.sync(&scan.files, &mut s.rng);
             s.library = scan.files;
             s.monitors = watch(&d, &scan.dirs);
-            s.preloaded = None;
+            s.preloaded.clear();
             eprintln!(
                 "wallslaed: {} wallpapers, {} left in this cycle",
                 s.library.len(),
@@ -521,7 +522,7 @@ fn show(d: &Shared, path: String) {
     let (generation, job, ready) = {
         let mut s = d.borrow_mut();
         s.generation += 1;
-        let ready = s.preloaded.take().filter(|p| p.source == path);
+        let ready = s.preloaded.iter().position(|p| p.source == path).map(|i| s.preloaded.swap_remove(i));
         (s.generation, s.job(path), ready)
     };
     if let Some(p) = ready {
@@ -560,7 +561,12 @@ fn apply(d: &Shared, p: Prepared) {
         if s.media.active.is_none() {
             set_background(&s, p.picture.as_deref());
         }
-        s.current = Some(p);
+        // Usually what Previous shows: keep it ready.
+        if let Some(old) = s.current.replace(p) {
+            if old.baked_with == s.blur() {
+                s.preloaded.push(old);
+            }
+        }
         save_state(&s);
     }
     emit_changed(d);
@@ -593,7 +599,7 @@ fn queue_rebake(d: &Shared) {
 fn rebake(d: &Shared) {
     let (generation, blur, cache_dir, keep, current, media) = {
         let mut s = d.borrow_mut();
-        s.preloaded = None;
+        s.preloaded.clear();
         s.blur_generation += 1;
         let pic = |p: &Option<Prepared>| p.as_ref().and_then(|p| Some((p.picture.clone()?, p.key.clone())));
         (s.blur_generation, s.blur(), s.cache_dir.clone(), s.in_use(), pic(&s.current), pic(&s.media_now))
@@ -634,43 +640,47 @@ fn rebake(d: &Shared) {
     });
 }
 
-/// Prepare the next wallpaper now so switching later is instant.
+/// Prepare the next and previous wallpapers now so switching later is instant.
 fn preload(d: &Shared) {
-    let (generation, job) = {
+    let (generation, jobs) = {
         let mut s = d.borrow_mut();
-        let next = {
+        let s = &mut *s;
+        let wanted: Vec<String> = {
             let ok = eligible(&s.library);
-            s.bag.peek(&ok).map(str::to_owned)
+            [s.bag.peek(&ok), s.bag.peek_previous(&ok)].into_iter().flatten().map(str::to_owned).collect()
         };
-        let Some(next) = next else { return };
-        if s.preloaded.as_ref().is_some_and(|p| p.source == next) ||
-            s.preloading.as_deref() == Some(next.as_str())
-        {
-            return;
-        }
-        s.preloading = Some(next.clone());
-        (s.generation, s.job(next))
+        s.preloaded.retain(|p| wanted.contains(&p.source));
+        let missing: Vec<String> = wanted
+            .into_iter()
+            .filter(|w| !s.preloaded.iter().any(|p| &p.source == w) && !s.preloading.contains(w))
+            .collect();
+        s.preloading.extend(missing.iter().cloned());
+        (s.generation, missing.into_iter().map(|w| s.job(w)).collect::<Vec<_>>())
     };
-    let d = d.clone();
-    glib::spawn_future_local(async move {
-        let result = gio::spawn_blocking(move || prepare::prepare(&job)).await;
-        let ready = {
-            let mut s = d.borrow_mut();
-            s.preloading = None;
-            match result {
-                // Dropped if the blur settings changed while it was being prepared.
-                Ok(Ok(p)) if s.generation == generation && p.baked_with == s.blur() => {
-                    s.preloaded = Some(p);
-                    true
+    for job in jobs {
+        let d = d.clone();
+        glib::spawn_future_local(async move {
+            let source = job.source.clone();
+            let result = gio::spawn_blocking(move || prepare::prepare(&job)).await;
+            let ready = {
+                let mut s = d.borrow_mut();
+                s.preloading.retain(|p| *p != source);
+                match result {
+                    // Dropped if the blur settings changed while it was being prepared.
+                    Ok(Ok(p)) if s.generation == generation && p.baked_with == s.blur() => {
+                        s.preloaded.retain(|q| q.source != p.source);
+                        s.preloaded.push(p);
+                        true
+                    }
+                    _ => false,
                 }
-                _ => false,
+            };
+            // The extension uploads `next-picture` and `previous-picture` ahead of the switch.
+            if ready {
+                emit_changed(&d);
             }
-        };
-        // The extension uploads `next-picture` ahead of the switch.
-        if ready {
-            emit_changed(&d);
-        }
-    });
+        });
+    }
 }
 
 fn set_background(s: &Daemon, picture: Option<&Path>) {
@@ -755,9 +765,17 @@ fn state_variant(s: &Daemon) -> Variant {
         dict.insert("blurred", path_str(&m.blurred));
     }
     dict.insert("audio", s.media_now.is_some());
-    // What the rotation shows next, once prepared; nothing while music plays.
-    let next = s.preloaded.as_ref().filter(|_| s.media.active.is_none());
-    dict.insert("next-picture", next.map(|p| path_str(&p.picture)).unwrap_or_default());
+    // What Next and Previous would show, once prepared; nothing while music plays.
+    let ok = eligible(&s.library);
+    let ahead = |source: Option<&str>| {
+        s.preloaded
+            .iter()
+            .find(|p| s.media.active.is_none() && Some(p.source.as_str()) == source)
+            .map(|p| path_str(&p.picture))
+            .unwrap_or_default()
+    };
+    dict.insert("next-picture", ahead(s.bag.peek(&ok)));
+    dict.insert("previous-picture", ahead(s.bag.peek_previous(&ok)));
     dict.end()
 }
 
@@ -1078,9 +1096,10 @@ impl Daemon {
 
     /// Generated files that are on screen or about to be: the cache keeps them.
     fn in_use(&self) -> Vec<PathBuf> {
-        [&self.current, &self.media_now, &self.preloaded]
+        [&self.current, &self.media_now]
             .into_iter()
             .flatten()
+            .chain(&self.preloaded)
             .flat_map(|p| [&p.picture, &p.blurred, &p.playable])
             .flatten()
             .cloned()

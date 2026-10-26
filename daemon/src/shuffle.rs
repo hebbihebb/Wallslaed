@@ -120,6 +120,15 @@ impl Bag {
             .map(String::as_str)
     }
 
+    /// What `previous` would return, without changing anything.
+    pub fn peek_previous(&self, eligible: &dyn Fn(&str) -> bool) -> Option<&str> {
+        self.history[..self.cursor.min(self.history.len())]
+            .iter()
+            .rev()
+            .find(|p| eligible(p) && !self.banned.contains(*p))
+            .map(String::as_str)
+    }
+
     pub fn previous(&mut self, eligible: &dyn Fn(&str) -> bool) -> Option<String> {
         let mut c = self.cursor;
         while c > 0 {
@@ -288,6 +297,22 @@ mod tests {
         assert_eq!(bag.previous(&all).unwrap(), a);
         assert_eq!(bag.peek(&all).unwrap(), b);
         assert_eq!(bag.next(&library, &all, 1, &mut rng).unwrap(), b);
+    }
+
+    #[test]
+    fn peek_previous_matches_previous() {
+        let library = lib(20);
+        let mut rng = fastrand::Rng::with_seed(7);
+        let mut bag = Bag::default();
+        bag.sync(&library, &mut rng);
+        assert_eq!(bag.peek_previous(&all), None);
+        for _ in 0..5 {
+            bag.next(&library, &all, 1, &mut rng);
+        }
+        for _ in 0..5 {
+            let peeked = bag.peek_previous(&all).map(str::to_owned);
+            assert_eq!(peeked, bag.previous(&all));
+        }
     }
 
     #[test]

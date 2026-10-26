@@ -13,6 +13,27 @@ Last updated: 2026-10-26 (shell blur installed for a live test; Codex performanc
 - Installed in the live session: `feature/shell-blur` (`9be4b8b`), installed 2026-10-26; extension takes effect after logging out and back in. Hide Top Bar was still enabled in the user's session at install time (conflicts with `topbar-autohide`), and the user's `blur-popups`, `blur-app-folders`, `blur-screenshot` were off.
 - Backups: `~/.local/share/wallslaed-backups/installed-main-d77bfef/` (before the shell blur test), `installed-gnome51-bf0d962/` (before the glycin conversion), `installed-random-settings-5a7d4ac/` (the last GNOME 50 build), `installed-main-480b01e/` (the build before this fix), `installed-transitions-2026-10-25/`, `installed-main-761c5ae/` (the build before the new transitions) and `installed-2026-10-25/` (before the menu race fix); each has a `restore.sh`.
 
+## In progress: GNOME's texture cache bypassed, Previous prepared (`feature/fast-switch`, 2026-10-26)
+
+Audit P-02 remainder: GNOME's `BackgroundTextureCache` never evicts, so everything still loading through GNOME (Previous, end of a round, 16-bit images) stayed on the GPU for the session. The user chose option 3: every desktop wallpaper load goes through `preload.js`, plus the daemon preparing Previous.
+
+| Change | State |
+| --- | --- |
+| Daemon: keeps the next and previous wallpapers prepared (`preloaded` is a list; the old current one is kept as previous); `previous-picture` in the state; `Bag::peek_previous` | verified: build, 26 tests (new `peek_previous_matches_previous`), no warnings |
+| `preload.js`: a picture GNOME asks for that isn't prepared is loaded on demand the same way, never through GNOME's cache; 16-bit and float formats; sliced texture for oversized pictures, as GNOME does | verified headless (below) |
+
+Headless, 4K scale 2 (`.scratch/fast-switch/`, run 5 mode `p02`, run 6 full suite):
+
+- Previous: prepared, 10-36 ms longest main-loop gap (was 114-188 ms through GNOME).
+- Unprepared pictures: shown 0.19-0.49 s after the change, 9-46 ms gaps; the same through GNOME 128-205 ms.
+- 16-bit PNG: pixel-identical to GNOME's rendering, 13 ms gap (GNOME: 554 ms).
+- 60 changes mixing Next, Previous and unprepared pictures: zero loads through GNOME, at most 3 textures kept, GPU memory 0.76-1.1 GB, flat.
+- Run 6 (full suite): all earlier checks still pass, shell log free of CRITICAL/JS errors.
+
+GNOME bug report: not filed (needs the user's GNOME GitLab login; Claude in Chrome wasn't connected). Draft in `.scratch/fast-switch/gnome-issue.md`.
+
+Not tested: the real desktop; an image too large for one texture (sliced path).
+
 ## Accepted: wallpaper switch without the freeze (`feature/fast-switch`, 2026-10-26)
 
 Audit finding P-01 (`AUDIT.md` on `codex/perf-audit`): GNOME 51 decodes a new wallpaper synchronously and uploads it in one call on the compositor thread, a 125-155 ms freeze at 4K even with transitions off. The audit proposed a persistent presenter replacing GNOME's background handling; this does less: it keeps GNOME's pipeline and only supplies the texture.
