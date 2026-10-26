@@ -1,13 +1,33 @@
 # Current Tasks
 
-Last updated: 2026-10-25 (new transitions accepted and merged; Slide and Iris retired).
+Last updated: 2026-10-26 (Random uses every effect; desktop menu opens Wallslæd's settings; shell blur shelved).
 
 ## Git state
 
 - `main`: accepted work, including the menu race fix and the new transitions (merged 2026-10-25), pushed to `origin`.
-- `fix/menu-race-dissolve` and `feature/more-transitions`: merged into `main` and deleted (never pushed). `main` is the only branch.
-- Installed in the live session: the new-transitions build (2026-10-25 23:29), which still offers Slide and Iris. Reinstalling `main` drops them; a stored `slide` or `iris` then plays as Crossfade.
-- Backups: `~/.local/share/wallslaed-backups/installed-main-761c5ae/` (the build before the new transitions) and `installed-2026-10-25/` (before the menu race fix); each has a `restore.sh`.
+- `fix/random-and-settings` (2026-10-26): off `main`, see below. Not merged, not installed.
+- `feature/shell-blur`: shelved until the user has time to test it properly; see "Shelved" below. Not merged.
+- Installed in the live session: `main` (`480b01e`). The user restored it 2026-10-26 after trying the shell-blur build.
+- Backups: `~/.local/share/wallslaed-backups/installed-transitions-2026-10-25/`, `installed-main-761c5ae/` (the build before the new transitions) and `installed-2026-10-25/` (before the menu race fix); each has a `restore.sh`.
+
+## In progress: `fix/random-and-settings` (2026-10-26)
+
+User reports: Random never played the newer effects, and both "settings" items in the desktop menu open GNOME Settings (they are GNOME's own: "Display Settings" and "Settings", which reopens its last page).
+
+| Change | State |
+| --- | --- |
+| `transitions.js`: the Random pool holds all twelve effects | verified headless: 600 draws hit all twelve (43-69 each); 12 real wallpaper changes played 11 different effects, no JS errors |
+| `menu.js`: "Wallslæd Settings" at the end of our desktop-menu section opens the preferences | verified headless: activating it closed the menu and opened the "Wallslæd" preferences window; 3 disable/enable cycles, extension stays active |
+
+Not tested: real mouse clicks, the new effects on NVIDIA in the Random rotation. Test script: `.scratch/random-settings/test.sh`.
+
+## Shelved: shell blur and top-bar autohide (`feature/shell-blur`)
+
+Kept on its own branch until the user can test it properly. Problems the user saw on the real desktop (2026-10-26), none reproduced headless:
+
+- The mouse pointer sticks in the top-left corner (likely the top-bar reveal barrier).
+- Many blur effects do not render correctly.
+- Square boxes in the desktop right-click menus and in the top bar's popup menus.
 
 ## Done: music videos, media controls, wallpaper browser
 

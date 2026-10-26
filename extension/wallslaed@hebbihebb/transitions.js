@@ -12,10 +12,10 @@ import * as Background from 'resource:///org/gnome/shell/ui/background.js';
 import * as BoxPointer from 'resource:///org/gnome/shell/ui/boxpointer.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
-// The `random` pool. A stored 'dissolve', 'slide' or 'iris' (removed) falls
-// through to the crossfade. Newer effects join the pool once they're accepted on a real
-// desktop; until then they play only when picked by name.
-const EFFECTS = ['fade', 'zoom', 'pixelate', 'wipe', 'blur'];
+// The `random` pool: every effect. A stored 'dissolve', 'slide' or 'iris'
+// (removed) falls through to the crossfade.
+const EFFECTS = ['fade', 'zoom', 'pixelate', 'wipe', 'blur', 'tilt', 'burn',
+    'freeze', 'shatter', 'ripple', 'melt', 'leak'];
 
 // Shared by every shader. `seed` (0..1) varies each transition. Lengths are in
 // screen heights (`wsl_q`), so effects look the same at any resolution, and
