@@ -1,6 +1,7 @@
 import {Extension, InjectionManager} from 'resource:///org/gnome/shell/extensions/extension.js';
 
 import {AnimatedHost} from './animated.js';
+import {BlurLayers} from './blur.js';
 import {DaemonClient} from './daemon.js';
 import {DesktopMenu} from './menu.js';
 import {Transitions} from './transitions.js';
@@ -15,10 +16,12 @@ export default class WallslaedExtension extends Extension {
         this._animated = new AnimatedHost(this._settings, this._daemon);
         this._menu = new DesktopMenu(this._daemon, this._animated, this._injections);
         this._transitions = new Transitions(this._settings, this._injections);
+        this._blur = new BlurLayers(this._settings, this._daemon);
     }
 
     disable() {
         this._injections.clear();
+        this._blur.destroy();
         this._menu.destroy();
         this._animated.destroy();
         this._transitions.destroy();
@@ -26,6 +29,7 @@ export default class WallslaedExtension extends Extension {
         this._injections = null;
         this._animated = null;
         this._transitions = null;
+        this._blur = null;
         this._menu = null;
         this._daemon = null;
         this._settings = null;

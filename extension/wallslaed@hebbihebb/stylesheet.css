@@ -1,0 +1,45 @@
+/* Only active under the classes blur.js adds while a surface is blurred. */
+
+/* Top bar: a light tint over the blurred wallpaper; clear in the overview,
+   where the overview's blur shows through as usual. */
+#panel.wallslaed-blur-panel {
+    background-color: rgba(30, 30, 33, 0.5);
+    box-shadow: none;
+}
+
+#panel.wallslaed-blur-panel:overview,
+#panel.wallslaed-blur-panel.unlock-screen,
+#panel.wallslaed-blur-panel.login-screen {
+    background-color: transparent;
+}
+
+/* Dash: see-through over the blurred overview. */
+.wallslaed-blur-dash #dash .dash-background {
+    background-color: rgba(30, 30, 33, 0.5);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.wallslaed-blur-dash #dash .dash-separator {
+    background-color: rgba(255, 255, 255, 0.12);
+}
+
+/* Overview: search and workspace thumbnails let the blur through. */
+.wallslaed-blur-overview .search-entry {
+    color: white;
+    background-color: rgba(255, 255, 255, 0.07);
+    box-shadow: none;
+}
+
+.wallslaed-blur-overview .search-entry:focus {
+    background-color: rgba(255, 255, 255, 0.12);
+}
+
+.wallslaed-blur-overview .search-entry .search-entry-icon,
+.wallslaed-blur-overview .search-entry StLabel.hint-text {
+    color: rgba(255, 255, 255, 0.65);
+}
+
+.wallslaed-blur-overview .search-section-content,
+.wallslaed-blur-overview .page-navigation-arrow {
+    background-color: rgba(255, 255, 255, 0.07);
+}

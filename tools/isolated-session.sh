@@ -40,7 +40,7 @@ if $install; then
     install -Dm644 -t "$schemas" data/io.github.hebbihebb.Wallslaed.gschema.xml
     glib-compile-schemas --strict "$schemas"
     command rm -rf "$ext"
-    install -Dm644 -t "$ext" extension/$uuid/*.js extension/$uuid/metadata.json
+    install -Dm644 -t "$ext" extension/$uuid/*.js extension/$uuid/*.css extension/$uuid/metadata.json
     install -Dm644 -t "$ext/schemas" data/io.github.hebbihebb.Wallslaed.gschema.xml
     glib-compile-schemas "$ext/schemas"
 fi

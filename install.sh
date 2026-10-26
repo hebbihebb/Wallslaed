@@ -16,7 +16,7 @@ install -Dm644 -t "$SCHEMAS" data/io.github.hebbihebb.Wallslaed.gschema.xml
 glib-compile-schemas "$SCHEMAS"
 
 rm -rf "$EXT"
-install -Dm644 -t "$EXT" extension/$UUID/*.js extension/$UUID/metadata.json
+install -Dm644 -t "$EXT" extension/$UUID/*.js extension/$UUID/*.css extension/$UUID/metadata.json
 install -Dm644 -t "$EXT/schemas" data/io.github.hebbihebb.Wallslaed.gschema.xml
 glib-compile-schemas "$EXT/schemas"
 
