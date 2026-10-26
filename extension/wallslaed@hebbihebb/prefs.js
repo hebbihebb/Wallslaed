@@ -128,6 +128,14 @@ export default class WallslaedPreferences extends ExtensionPreferences {
         settings.bind('prescale', prescale, 'active', Gio.SettingsBindFlags.DEFAULT);
         library.add(prescale);
 
+        const cacheSize = new Adw.SpinRow({
+            title: _('Cache Size (MB)'),
+            subtitle: _('Disk space for scaled and converted wallpapers, so they are ready again next round'),
+            adjustment: new Gtk.Adjustment({lower: 100, upper: 100000, step_increment: 256, page_increment: 1024}),
+        });
+        settings.bind('cache-size', cacheSize, 'value', Gio.SettingsBindFlags.DEFAULT);
+        library.add(cacheSize);
+
         const actions = new Adw.ActionRow({title: _('Library')});
         for (const [label, method] of [[_('Rescan'), 'Rescan'], [_('Next Wallpaper'), 'Next']]) {
             const b = new Gtk.Button({label, valign: Gtk.Align.CENTER});

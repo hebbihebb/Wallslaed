@@ -17,8 +17,10 @@ use image::{DynamicImage, ImageDecoder, ImageReader};
 
 use crate::library::{self, Kind};
 
-/// Number of generated files to keep in the cache directory.
-const CACHE_KEEP: usize = 40;
+/// Number of baked blurs to keep in the cache directory. Generated pictures
+/// (conversions, scaled copies, posters, videos) are kept by size instead, see
+/// [`Job::cache_bytes`]: a JPEG XL conversion costs about half a second.
+const BLUR_KEEP: usize = 40;
 /// Unfinished files older than this were abandoned (a failed rename, a crash).
 const PART_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(3600);
 /// Don't bother scaling images that are at most this much bigger than the screen.
@@ -39,6 +41,8 @@ pub struct Job {
     pub blur: Option<Blur>,
     /// Files in use (on screen, or prepared next): never trimmed.
     pub keep: Vec<PathBuf>,
+    /// How much the generated pictures in the cache may take up, in bytes.
+    pub cache_bytes: u64,
 }
 
 /// How the extension wants its blurred wallpaper.
@@ -88,7 +92,14 @@ pub fn prepare(job: &Job) -> Result<Prepared, String> {
 
     let result = match kind {
         Kind::Gif if library::gif_is_animated(src) => prepare_gif(job, &key),
-        Kind::Static | Kind::Gif => prepare_static(job, &key),
+        Kind::Static | Kind::Gif => prepare_static(job, &key).map(|(p, pixels)| {
+            // Bake from the pixels just decoded, if any, rather than
+            // decoding the picture again.
+            if let (Some(blur), Some(img)) = (job.blur, pixels) {
+                return Prepared { blurred: bake_blur_image(&img, &key, &job.cache_dir, blur), ..p };
+            }
+            p
+        }),
         Kind::Video => Ok(Prepared {
             source: job.source.clone(),
             picture: poster(job, &key),
@@ -100,13 +111,13 @@ pub fn prepare(job: &Job) -> Result<Prepared, String> {
     };
     let result = result.map(|mut p| {
         p.key = key.clone();
-        if let (Some(blur), Some(picture)) = (job.blur, &p.picture) {
+        if let (Some(blur), Some(picture), None) = (job.blur, &p.picture, &p.blurred) {
             p.blurred = bake_blur(picture, &key, &job.cache_dir, blur);
         }
         p.baked_with = job.blur;
         p
     });
-    trim_cache(&job.cache_dir, &job.keep);
+    trim_cache(&job.cache_dir, &job.keep, job.cache_bytes);
     // Decoding big images grows the heap; give it back to the OS.
     unsafe {
         libc::malloc_trim(0);
@@ -114,7 +125,8 @@ pub fn prepare(job: &Job) -> Result<Prepared, String> {
     result
 }
 
-fn prepare_static(job: &Job, key: &str) -> Result<Prepared, String> {
+/// Also returns the pixels if it decoded the picture, for the blur.
+fn prepare_static(job: &Job, key: &str) -> Result<(Prepared, Option<DynamicImage>), String> {
     let src = Path::new(&job.source);
     let done = |picture: PathBuf| Prepared {
         source: job.source.clone(),
@@ -125,13 +137,13 @@ fn prepare_static(job: &Job, key: &str) -> Result<Prepared, String> {
         key: String::new(),
     };
     if !job.prescale {
-        return Ok(done(src.to_path_buf()));
+        return Ok((done(src.to_path_buf()), None));
     }
 
     let out = job.cache_dir.join(format!("{key}.jpg"));
     if out.exists() {
         touch(&out);
-        return Ok(done(out));
+        return Ok((done(out), None));
     }
 
     let (sw, sh) = (job.screen.0.max(1) as f64, job.screen.1.max(1) as f64);
@@ -140,7 +152,7 @@ fn prepare_static(job: &Job, key: &str) -> Result<Prepared, String> {
     let img = match reader(src).and_then(|r| r.into_dimensions().map_err(|e| e.to_string())) {
         Ok((w, h)) => {
             if cover(w, h) * SCALE_SLACK >= 1.0 {
-                return Ok(done(src.to_path_buf()));
+                return Ok((done(src.to_path_buf()), None));
             }
             let mut decoder = reader(src)?.into_decoder().map_err(|e| e.to_string())?;
             let orientation = decoder.orientation().map_err(|e| e.to_string())?;
@@ -154,7 +166,7 @@ fn prepare_static(job: &Job, key: &str) -> Result<Prepared, String> {
             Ok(img) => img,
             Err(e) => {
                 eprintln!("wallslaed: can't decode {}: {e}", src.display());
-                return Ok(done(src.to_path_buf()));
+                return Ok((done(src.to_path_buf()), None));
             }
         },
     };
@@ -183,7 +195,7 @@ fn prepare_static(job: &Job, key: &str) -> Result<Prepared, String> {
         enc.encode_image(&dst).map_err(|e| e.to_string())?;
     }
     std::fs::rename(&tmp, &out).map_err(|e| e.to_string())?;
-    Ok(done(out))
+    Ok((done(out), Some(dst)))
 }
 
 fn prepare_gif(job: &Job, key: &str) -> Result<Prepared, String> {
@@ -248,11 +260,12 @@ pub fn blur_only(
     cache_dir: &Path,
     blur: Blur,
     keep: &[PathBuf],
+    cache_bytes: u64,
 ) -> Option<PathBuf> {
     let _guard = JOB_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     std::fs::create_dir_all(cache_dir).ok()?;
     let out = bake_blur(picture, key, cache_dir, blur);
-    trim_cache(cache_dir, keep);
+    trim_cache(cache_dir, keep, cache_bytes);
     unsafe {
         libc::malloc_trim(0);
     }
@@ -268,37 +281,51 @@ pub fn blur_only(
 /// Named after the source (`key`), not `picture`: touching a cached picture
 /// to keep it changes its mtime, not its pixels.
 fn bake_blur(picture: &Path, key: &str, cache_dir: &Path, blur: Blur) -> Option<PathBuf> {
-    let out = cache_dir.join(format!("{key}-blur-{}-{}.png", blur.strength, blur.brightness));
+    let out = blur_path(key, cache_dir, blur);
     if out.exists() {
         touch(&out);
         return Some(out);
     }
-
     let (w, h) = reader(picture).ok()?.into_dimensions().ok()?;
     if w as u64 * h as u64 > BLUR_MAX_SOURCE_PIXELS {
+        return None;
+    }
+    let mut decoder = reader(picture).ok()?.into_decoder().ok()?;
+    let orientation = decoder.orientation().ok()?;
+    let mut img = DynamicImage::from_decoder(decoder).ok()?;
+    img.apply_orientation(orientation);
+    bake_blur_image(&DynamicImage::ImageRgb8(img.into_rgb8()), key, cache_dir, blur)
+}
+
+fn blur_path(key: &str, cache_dir: &Path, blur: Blur) -> PathBuf {
+    cache_dir.join(format!("{key}-blur-{}-{}.png", blur.strength, blur.brightness))
+}
+
+/// [`bake_blur`] from pixels already decoded (and oriented).
+fn bake_blur_image(img: &DynamicImage, key: &str, cache_dir: &Path, blur: Blur) -> Option<PathBuf> {
+    let out = blur_path(key, cache_dir, blur);
+    if out.exists() {
+        touch(&out);
+        return Some(out);
+    }
+    if img.width() as u64 * img.height() as u64 > BLUR_MAX_SOURCE_PIXELS {
         return None;
     }
     // Shrink so the blur is about 4 pixels wide at the small size: smooth once
     // scaled up, and as little work as possible. However weak the blur, the
     // copy stays small, so memory doesn't depend on the strength.
-    let bound = (w as f64 * h as f64 / BLUR_MAX_PIXELS).sqrt();
+    let bound = (img.width() as f64 * img.height() as f64 / BLUR_MAX_PIXELS).sqrt();
     let factor = (blur.strength as f64 / 4.0).clamp(1.0, 8.0).max(bound);
-    let mut decoder = reader(picture).ok()?.into_decoder().ok()?;
-    let orientation = decoder.orientation().ok()?;
-    let mut img = DynamicImage::from_decoder(decoder).ok()?;
-    img.apply_orientation(orientation);
-    let img = DynamicImage::ImageRgb8(img.into_rgb8());
     let tw = ((img.width() as f64 / factor).round() as u32).max(1);
     let th = ((img.height() as f64 / factor).round() as u32).max(1);
     let mut small = DynamicImage::new_rgb8(tw, th);
     Resizer::new()
         .resize(
-            &img,
+            img,
             &mut small,
             &ResizeOptions::new().resize_alg(ResizeAlg::Convolution(FilterType::Bilinear)),
         )
         .ok()?;
-    drop(img);
 
     let mut small = small.into_rgb8();
     if blur.strength > 0 {
@@ -395,36 +422,45 @@ fn touch(path: &Path) {
     }
 }
 
-/// Keeps the newest CACHE_KEEP files, and every file in `keep`.
-fn trim_cache(dir: &Path, keep: &[PathBuf]) {
+/// Keeps every file in `keep`, the newest BLUR_KEEP baked blurs, and the
+/// newest generated pictures that fit in `budget` bytes.
+fn trim_cache(dir: &Path, keep: &[PathBuf], budget: u64) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     let now = SystemTime::now();
-    let mut files: Vec<(SystemTime, PathBuf)> = entries
-        .flatten()
-        .filter_map(|e| {
-            let m = e.metadata().ok()?;
-            let name = e.file_name();
-            let name = name.to_str()?;
-            let modified = m.modified().ok()?;
-            if !m.is_file() || keep.contains(&e.path()) {
-                return None;
+    let mut blurs = Vec::new();
+    let mut pictures = Vec::new();
+    for e in entries.flatten() {
+        let Ok(m) = e.metadata() else { continue };
+        let name = e.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let Ok(modified) = m.modified() else { continue };
+        if !m.is_file() || keep.contains(&e.path()) {
+            continue;
+        }
+        // Leave in-progress transcodes alone; abandoned ones go.
+        if name.contains(".part") {
+            if now.duration_since(modified).is_ok_and(|age| age > PART_MAX_AGE) {
+                let _ = std::fs::remove_file(e.path());
             }
-            // Leave in-progress transcodes alone; abandoned ones go.
-            if name.contains(".part") {
-                if now.duration_since(modified).is_ok_and(|age| age > PART_MAX_AGE) {
-                    let _ = std::fs::remove_file(e.path());
-                }
-                return None;
-            }
-            Some((modified, e.path()))
-        })
-        .collect();
-    if files.len() <= CACHE_KEEP {
-        return;
+            continue;
+        }
+        if name.contains("-blur-") {
+            blurs.push((modified, e.path()));
+        } else {
+            pictures.push((modified, m.len(), e.path()));
+        }
     }
-    files.sort_unstable_by(|a, b| b.0.cmp(&a.0));
-    for (_, path) in files.drain(CACHE_KEEP..) {
+    blurs.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+    for (_, path) in blurs.into_iter().skip(BLUR_KEEP) {
         let _ = std::fs::remove_file(path);
+    }
+    pictures.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+    let mut total = 0u64;
+    for (_, len, path) in pictures {
+        total = total.saturating_add(len);
+        if total > budget {
+            let _ = std::fs::remove_file(path);
+        }
     }
 }
 
@@ -449,6 +485,7 @@ mod tests {
             cache_dir: cache.clone(),
             blur: None,
             keep: Vec::new(),
+            cache_bytes: u64::MAX,
         };
         let out = prepare(&job(&big)).unwrap();
         let pic = out.picture.unwrap();
@@ -482,6 +519,7 @@ mod tests {
             cache_dir: cache.clone(),
             blur: Some(Blur::new(32, 0.5)),
             keep: Vec::new(),
+            cache_bytes: u64::MAX,
         };
         let out = prepare(&job).unwrap();
         let blurred = out.blurred.expect("a blurred copy");
@@ -498,7 +536,7 @@ mod tests {
         assert!(near > mid && near < left, "a gradient across the edge");
 
         // Asking again reuses the file.
-        let again = blur_only(out.picture.as_deref().unwrap(), &out.key, &cache, job.blur.unwrap(), &[]);
+        let again = blur_only(out.picture.as_deref().unwrap(), &out.key, &cache, job.blur.unwrap(), &[], u64::MAX);
         assert_eq!(again.as_deref(), Some(blurred.as_path()));
 
         // No blur asked for, none made.
@@ -536,6 +574,7 @@ mod tests {
             cache_dir: cache.clone(),
             blur: None,
             keep: Vec::new(),
+            cache_bytes: u64::MAX,
         };
         for (src, size) in [(&big, (2160, 1080)), (&small, (1000, 500))] {
             let pic = prepare(&job(src)).unwrap().picture.unwrap();
@@ -561,6 +600,7 @@ mod tests {
             cache_dir: cache.to_path_buf(),
             blur: Some(blur),
             keep: Vec::new(),
+            cache_bytes: u64::MAX,
         }
     }
 
@@ -593,10 +633,62 @@ mod tests {
         let p = prepare(&blur_job(&src, &cache, Blur::new(30, 0.6))).unwrap();
         let picture = p.picture.clone().unwrap();
         for strength in 31..80 {
-            let blurred = blur_only(&picture, &p.key, &cache, Blur::new(strength, 0.6), &[picture.clone()]);
+            let blurred = blur_only(&picture, &p.key, &cache, Blur::new(strength, 0.6), &[picture.clone()], 0);
             assert!(blurred.is_some(), "strength {strength}");
             assert!(picture.exists(), "picture trimmed at strength {strength}");
         }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // P-06: generated pictures are kept by size, blurs by count.
+    #[test]
+    fn trimming_keeps_pictures_within_the_budget() {
+        let (dir, cache) = scratch("budget");
+        std::fs::create_dir_all(&cache).unwrap();
+        let file = |name: &str, len: usize, age: u64| {
+            let path = cache.join(name);
+            std::fs::write(&path, vec![0u8; len]).unwrap();
+            let t = SystemTime::now() - std::time::Duration::from_secs(age);
+            File::options().append(true).open(&path).unwrap().set_modified(t).unwrap();
+            path
+        };
+        let newest = file("a-3840x2160.jpg", 400, 10);
+        let middle = file("b-3840x2160.jpg", 400, 20);
+        let oldest = file("c-3840x2160.jpg", 400, 30);
+        let kept = file("d-3840x2160.jpg", 400, 40);
+        let blurs: Vec<PathBuf> = (0..BLUR_KEEP + 2).map(|i| file(&format!("e{i}-blur-30-60.png"), 10, i as u64)).collect();
+        trim_cache(&cache, &[kept.clone()], 1000);
+        assert!(newest.exists() && middle.exists(), "newest within the budget stay");
+        assert!(!oldest.exists(), "over the budget goes");
+        assert!(kept.exists(), "in use stays whatever the budget");
+        assert_eq!(blurs.iter().filter(|p| p.exists()).count(), BLUR_KEEP);
+        assert!(blurs[0].exists() && !blurs[BLUR_KEEP + 1].exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // P-06: a picture decoded for scaling bakes its blur from those pixels,
+    // the same as from the written file.
+    #[test]
+    fn blur_from_decoded_pixels_matches() {
+        let (dir, cache) = scratch("pixels");
+        let src = dir.join("big.png");
+        let mut img = image::RgbImage::new(4000, 2000);
+        for (x, y, px) in img.enumerate_pixels_mut() {
+            *px = image::Rgb([(x % 256) as u8, (y % 256) as u8, 128]);
+        }
+        img.save(&src).unwrap();
+        let p = prepare(&blur_job(&src, &cache, Blur::new(30, 0.6))).unwrap();
+        let from_pixels = image::open(p.blurred.as_ref().unwrap()).unwrap().into_rgb8();
+        std::fs::remove_file(p.blurred.as_ref().unwrap()).unwrap();
+        let again = bake_blur(p.picture.as_ref().unwrap(), &p.key, &cache, Blur::new(30, 0.6)).unwrap();
+        let from_file = image::open(again).unwrap().into_rgb8();
+        assert_eq!(from_pixels.dimensions(), from_file.dimensions());
+        // Only JPEG's loss separates them.
+        let diff = from_pixels.pixels().zip(from_file.pixels())
+            .map(|(a, b)| a.0.iter().zip(b.0).map(|(x, y)| x.abs_diff(y) as u32).max().unwrap())
+            .max()
+            .unwrap();
+        assert!(diff <= 4, "max channel difference {diff}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -639,7 +731,7 @@ mod tests {
         std::fs::write(&fresh, b"x").unwrap();
         File::options().append(true).open(&old).unwrap()
             .set_modified(SystemTime::now() - PART_MAX_AGE * 2).unwrap();
-        trim_cache(&cache, &[]);
+        trim_cache(&cache, &[], u64::MAX);
         assert!(!old.exists());
         assert!(fresh.exists(), "a transcode may still be writing it");
         std::fs::remove_dir_all(&dir).unwrap();

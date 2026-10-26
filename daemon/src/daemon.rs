@@ -597,18 +597,18 @@ fn queue_rebake(d: &Shared) {
 
 /// Bake the blur again for what's on screen, after its settings changed.
 fn rebake(d: &Shared) {
-    let (generation, blur, cache_dir, keep, current, media) = {
+    let (generation, blur, cache_dir, keep, cache_bytes, current, media) = {
         let mut s = d.borrow_mut();
         s.preloaded.clear();
         s.blur_generation += 1;
         let pic = |p: &Option<Prepared>| p.as_ref().and_then(|p| Some((p.picture.clone()?, p.key.clone())));
-        (s.blur_generation, s.blur(), s.cache_dir.clone(), s.in_use(), pic(&s.current), pic(&s.media_now))
+        (s.blur_generation, s.blur(), s.cache_dir.clone(), s.in_use(), s.cache_bytes(), pic(&s.current), pic(&s.media_now))
     };
     let d = d.clone();
     glib::spawn_future_local(async move {
         let bake = move |pic: &Option<(PathBuf, String)>| {
             let (picture, key) = pic.as_ref()?;
-            prepare::blur_only(picture, key, &cache_dir, blur?, &keep)
+            prepare::blur_only(picture, key, &cache_dir, blur?, &keep, cache_bytes)
         };
         let (cur, med) = (current.clone(), media.clone());
         let Ok((current_blur, media_blur)) =
@@ -1084,7 +1084,13 @@ impl Daemon {
             cache_dir: self.cache_dir.clone(),
             blur: self.blur(),
             keep: self.in_use(),
+            cache_bytes: self.cache_bytes(),
         }
+    }
+
+    /// The `cache-size` setting (MB), in bytes.
+    fn cache_bytes(&self) -> u64 {
+        self.settings.uint("cache-size") as u64 * 1024 * 1024
     }
 
     /// The blur the extension shows, if any surface uses the baked one.

@@ -49,6 +49,12 @@
       <summary>Shrink large images to screen size before showing them</summary>
       <description>Keeps GNOME Shell from holding full-size 4K/8K textures in memory.</description>
     </key>
+    <key name="cache-size" type="u">
+      <range min="100" max="100000"/>
+      <default>2048</default>
+      <summary>Disk space for prepared wallpapers, in MB</summary>
+      <description>Scaled copies and converted JPEG XL, AVIF and HEIC wallpapers are kept in ~/.cache/wallslaed up to this size, so they aren't prepared again every round.</description>
+    </key>
     <key name="transition" enum="io.github.hebbihebb.Wallslaed.Transition">
       <default>'fade'</default>
       <summary>Transition effect between wallpapers</summary>
