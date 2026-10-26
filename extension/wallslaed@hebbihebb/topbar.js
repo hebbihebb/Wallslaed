@@ -20,6 +20,9 @@ const SLIDE_MS = 200;
 // Same as Hide Top Bar's defaults.
 const PRESSURE_THRESHOLD = 100;
 const PRESSURE_TIMEOUT = 1000;
+// The edge barrier stops this far short of a hot corner, so it never holds a
+// pointer heading for the corner after the corner has let it go.
+const HOT_CORNER_GAP = 100;
 // While revealed by the pointer, how often to check whether it has left.
 const POINTER_POLL_MS = 250;
 
@@ -105,6 +108,7 @@ export class TopBar {
             this._updateBarrier();
             check();
         });
+        on(Main.layoutManager, 'hot-corners-changed', () => this._updateBarrier());
 
         Main.panel.menuManager._menus.forEach(menu => this._watchMenu(menu));
         this._watchFocus();
@@ -268,7 +272,8 @@ export class TopBar {
         this._unredirectDisabled = disabled;
     }
 
-    // Pointer reveal: a pressure barrier along the primary monitor's top edge.
+    // Pointer reveal: a pressure barrier along the primary monitor's top edge,
+    // short of its hot corner.
     _updateBarrier() {
         this._removeBarrier();
         const monitor = Main.layoutManager.primaryMonitor;
@@ -277,9 +282,16 @@ export class TopBar {
         this._pressure = new Layout.PressureBarrier(PRESSURE_THRESHOLD, PRESSURE_TIMEOUT,
             Shell.ActionMode.NORMAL);
         this._pressure.connect('trigger', () => this._reveal());
+        let x1 = monitor.x, x2 = monitor.x + monitor.width;
+        if (Main.layoutManager.hotCorners[monitor.index]) {
+            if (Clutter.get_default_text_direction() === Clutter.TextDirection.RTL)
+                x2 -= HOT_CORNER_GAP;
+            else
+                x1 += HOT_CORNER_GAP;
+        }
         this._barrier = new Meta.Barrier({
             backend: global.backend,
-            x1: monitor.x, x2: monitor.x + monitor.width,
+            x1, x2,
             y1: monitor.y, y2: monitor.y,
             directions: Meta.BarrierDirection.POSITIVE_Y,
         });
