@@ -57,7 +57,7 @@ export default class WallslaedExtension extends Extension {
         this._preloader = new Preloader(this._daemon, this._injections,
             () => this._transitions.busy);
         this._blur = new BlurLayers(this._settings, this._daemon);
-        this._liveBlur = new LiveBlur(this._settings, this._injections);
+        this._liveBlur = new LiveBlur(this._settings, this._injections, this._blur);
         this._topBar = new TopBar(this._settings, this._injections);
         this._appBlur = new AppBlur(this._settings);
     }

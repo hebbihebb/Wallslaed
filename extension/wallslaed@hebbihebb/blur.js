@@ -181,6 +181,14 @@ export class BlurLayers {
         this._panel?.layer.show(this._contents[this._panel.layer.index]);
     }
 
+    /**
+     * The baked blurred wallpaper of monitor `index` (a content its full
+     * size, brightness included), or null while there is none.
+     */
+    bakedContent(index) {
+        return this._source && !this._source.gpu ? this._contents[index]?.content ?? null : null;
+    }
+
     _disconnectGnomeBackground() {
         for (const id of this._gnomeIds)
             this._gnomeBackground.disconnect(id);
