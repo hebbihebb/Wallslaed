@@ -28,6 +28,7 @@
 
 import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
+import Graphene from 'gi://Graphene';
 import Meta from 'gi://Meta';
 import Mtk from 'gi://Mtk';
 import Shell from 'gi://Shell';
@@ -107,8 +108,10 @@ export class LiveBlur {
                 self._attach('popups', osd, osd._hbox);
         });
         after(MessageTray.MessageTray.prototype, '_showNotification', tray => {
+            // The bin is what scales and slides the banner in: the blur goes
+            // beside it, not inside, or it would be scaled twice.
             if (popups() && tray._banner)
-                self._attach('popups', tray._banner, tray._banner);
+                self._attach('popups', tray._bannerBin, tray._banner);
         });
         after(AppDisplay.AppFolderDialog.prototype, 'popup', dialog => {
             if (this._settings.get_boolean('blur-app-folders') && dialog._isOpen)
@@ -203,7 +206,7 @@ export class LiveBlur {
             if (r && overlaps(rect, r))
                 return null;
         }
-        return {content, monitor: Main.layoutManager.monitors[index]};
+        return {content, index, monitor: Main.layoutManager.monitors[index]};
     }
 
     _activate() {
@@ -305,7 +308,9 @@ class Blur {
         this._part.add_effect(this._effect);
         this._group.add_child(this._part);
         // Over bare desktop: the baked blur, clipped to the same rectangle.
-        this._baked = null; // {content, monitor} shown, or null for live
+        // Unlike the live blur it has the brightness in it, so its corners
+        // are rounded like the popup's, or they show as a dark square.
+        this._baked = null; // {content, index, monitor} shown, or null for live
         this._bakedClip = new Clutter.Actor({clip_to_allocation: true, visible: false});
         this._bakedPicture = new Clutter.Actor();
         this._bakedClip.add_child(this._bakedPicture);
@@ -369,8 +374,8 @@ class Blur {
         return extentsOf(this._part);
     }
 
-    // Show `baked` ({content, monitor}, see LiveBlur._baked) or, if null, the
-    // live blur.
+    // Show `baked` ({content, index, monitor}, see LiveBlur._baked) or, if
+    // null, the live blur.
     syncSource(baked) {
         if (this._destroyed || baked?.content === this._baked?.content)
             return;
@@ -378,9 +383,14 @@ class Blur {
         this._baked = baked;
         this._effect.enabled = !baked;
         this._bakedClip.visible = !!baked;
-        if (baked)
-            this._bakedPicture.set({content: baked.content, width: baked.monitor.width, height: baked.monitor.height});
-        else
+        if (baked) {
+            // Its own content over the same background: the rounded clip is
+            // per popup, and the overview and top bar show the shared one.
+            const content = Meta.BackgroundContent.new(global.display, baked.index);
+            content.background = baked.content.background;
+            content.rounded_clip_radius = this._target.get_theme_node().get_border_radius(St.Corner.TOPLEFT);
+            this._bakedPicture.set({content, width: baked.monitor.width, height: baked.monitor.height});
+        } else
             this._bakedPicture.content = null;
         this._placeBaked();
         if (wasBaked !== !!baked)
@@ -394,7 +404,12 @@ class Blur {
         this._bakedClip.set_position(this._part.x, this._part.y);
         this._bakedClip.set_size(this._part.width, this._part.height);
         const [x, y] = this._part.get_transformed_position();
-        this._bakedPicture.set_position(Math.round(this._baked.monitor.x - x), Math.round(this._baked.monitor.y - y));
+        const {monitor} = this._baked;
+        this._bakedPicture.set_position(Math.round(monitor.x - x), Math.round(monitor.y - y));
+        // In the picture's (the monitor's) coordinates.
+        const bounds = new Graphene.Rect();
+        bounds.init(Math.round(x - monitor.x), Math.round(y - monitor.y), this._part.width, this._part.height);
+        this._bakedPicture.content.set_rounded_clip_bounds(bounds);
     }
 
     redraw() {
