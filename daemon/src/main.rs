@@ -3,6 +3,7 @@ mod library;
 mod media;
 mod prepare;
 mod shuffle;
+mod store;
 
 use gio::prelude::*;
 

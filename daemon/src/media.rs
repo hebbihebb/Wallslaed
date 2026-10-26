@@ -12,31 +12,22 @@ use crate::library::{self, Kind};
 
 /// Thumbnails yt-dlp writes next to the video.
 const THUMB_EXTS: &[&str] = &["jpg", "webp", "png"];
+/// Longest title or error message kept from the downloader, in characters.
+const TEXT_MAX: usize = 300;
+/// Positions past this (a week) are nonsense; they're clamped.
+pub const POSITION_MAX: f64 = 7.0 * 24.0 * 3600.0;
 
 /// What's playing and where each video was left off. Saved separately from
 /// the bag so the bag's format doesn't change.
+/// Loaded and saved through [`crate::store`].
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct MediaState {
     pub active: Option<String>,
     #[serde(default)]
     pub positions: HashMap<String, f64>,
-}
-
-impl MediaState {
-    pub fn load(path: &Path) -> MediaState {
-        std::fs::read(path)
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default()
-    }
-
-    pub fn save(&self, path: &Path) {
-        let Ok(json) = serde_json::to_vec(self) else { return };
-        let tmp = path.with_extension("json.tmp");
-        if std::fs::write(&tmp, json).is_ok() {
-            let _ = std::fs::rename(&tmp, path);
-        }
-    }
+    /// Fields a newer version wrote: kept, so going back a version loses nothing.
+    #[serde(flatten)]
+    extra: serde_json::Map<String, serde_json::Value>,
 }
 
 pub struct Item {
@@ -58,13 +49,15 @@ pub fn folder(settings: &gio::Settings) -> PathBuf {
     }
 }
 
-/// Videos in the music folder, sorted by title.
+/// Videos in the music folder, sorted by title. Paths are in the form
+/// [`music_video`] gives, so the list matches what plays. Reads the disk:
+/// call it off the main loop.
 pub fn list(folder: &Path) -> Vec<Item> {
     let scan = library::scan(folder, true);
     let mut items: Vec<Item> = scan
         .files
         .into_iter()
-        .filter(|p| library::kind_of(Path::new(p)) == Some(Kind::Video))
+        .filter_map(|p| music_video(folder, Path::new(&p)))
         .map(|path| Item {
             title: title_of(Path::new(&path)),
             thumbnail: thumbnail_of(Path::new(&path)),
@@ -75,8 +68,15 @@ pub fn list(folder: &Path) -> Vec<Item> {
     items
 }
 
-pub fn is_music_video(folder: &Path, path: &Path) -> bool {
-    path.starts_with(folder) && library::kind_of(path) == Some(Kind::Video) && path.is_file()
+/// The path a music video is known by, if `path` is a video file inside
+/// `folder`. `..` and symlinks are resolved first, so neither can lead outside
+/// the folder; a file linked in from elsewhere isn't a music video. Reads the
+/// disk: call it off the main loop.
+pub fn music_video(folder: &Path, path: &Path) -> Option<String> {
+    let root = std::fs::canonicalize(folder).ok()?;
+    let real = std::fs::canonicalize(path).ok()?;
+    let ok = real.starts_with(&root) && library::kind_of(&real) == Some(Kind::Video) && real.is_file();
+    ok.then(|| real.to_str().map(str::to_owned)).flatten()
 }
 
 /// Display title: the file name without yt-dlp's trailing " [videoid]".
@@ -175,10 +175,14 @@ pub enum Event {
     Error(String),
 }
 
+fn capped(s: &str) -> String {
+    s.chars().take(TEXT_MAX).collect()
+}
+
 pub fn parse_line(line: &str) -> Option<Event> {
     let line = line.trim_end();
     if let Some(rest) = line.strip_prefix("wsl-title ") {
-        return Some(Event::Title(rest.to_owned()));
+        return Some(Event::Title(capped(rest)));
     }
     if let Some(rest) = line.strip_prefix("wsl-file ") {
         return Some(Event::File(rest.to_owned()));
@@ -191,7 +195,7 @@ pub fn parse_line(line: &str) -> Option<Event> {
         return Some(Event::Progress(done, total));
     }
     if let Some(rest) = line.strip_prefix("ERROR: ") {
-        return Some(Event::Error(rest.to_owned()));
+        return Some(Event::Error(capped(rest)));
     }
     if ["[Merger]", "[ThumbnailsConvertor]", "[MoveFiles]", "[FixupM3u8]"]
         .iter()
@@ -275,11 +279,41 @@ mod tests {
         let path = dir.join("media.json");
         let mut s = MediaState { active: Some("/m/a.mkv".into()), ..Default::default() };
         s.positions.insert("/m/a.mkv".into(), 123.5);
-        s.save(&path);
-        let back = MediaState::load(&path);
+        crate::store::write_atomic(&path, &serde_json::to_vec(&s).unwrap()).unwrap();
+        let back: MediaState = crate::store::load(&path);
         assert_eq!(back.active.as_deref(), Some("/m/a.mkv"));
         assert_eq!(back.positions["/m/a.mkv"], 123.5);
-        assert!(MediaState::load(&dir.join("missing.json")).active.is_none());
+        assert!(crate::store::load::<MediaState>(&dir.join("missing.json")).active.is_none());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // DS-10: `..` and symlinks can't lead out of the music folder.
+    #[test]
+    fn music_videos_stay_inside_the_folder() {
+        let dir = std::env::temp_dir().join(format!("wallslaed-escape-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let music = dir.join("music");
+        std::fs::create_dir_all(&music).unwrap();
+        std::fs::write(music.join("in.mkv"), b"x").unwrap();
+        std::fs::write(dir.join("out.mp4"), b"x").unwrap();
+        std::fs::write(music.join("notes.txt"), b"x").unwrap();
+        std::os::unix::fs::symlink(dir.join("out.mp4"), music.join("link.mp4")).unwrap();
+
+        let inside = music_video(&music, &music.join("in.mkv"));
+        assert_eq!(inside.as_deref(), music.join("in.mkv").canonicalize().unwrap().to_str());
+        assert!(music_video(&music, &music.join("../out.mp4")).is_none());
+        assert!(music_video(&music, &music.join("link.mp4")).is_none());
+        assert!(music_video(&music, &dir.join("out.mp4")).is_none());
+        assert!(music_video(&music, &music.join("notes.txt")).is_none());
+        assert!(music_video(&music, &music.join("gone.mkv")).is_none());
+        assert_eq!(list(&music).len(), 1, "the list holds what plays");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // DS-15: an enormous title is cut short.
+    #[test]
+    fn titles_are_capped() {
+        let long = format!("wsl-title {}", "x".repeat(100_000));
+        assert_eq!(parse_line(&long), Some(Event::Title("x".repeat(TEXT_MAX))));
     }
 }

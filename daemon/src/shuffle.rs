@@ -10,8 +10,13 @@ const HISTORY_LEN: usize = 100;
 const BOUNDARY_FRACTION: usize = 10;
 const BOUNDARY_MAX: usize = 200;
 
+/// Written into the file, so an older daemon can tell it's reading a newer one.
+pub const VERSION: u32 = 1;
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Bag {
+    #[serde(default)]
+    pub version: u32,
     order: Vec<String>,
     pos: usize,
     /// Shown items, oldest first. `cursor` points at the current one.
@@ -21,6 +26,9 @@ pub struct Bag {
     pub banned: HashSet<String>,
     #[serde(default)]
     pub cycle: u64,
+    /// Fields a newer version wrote: kept, so going back a version loses nothing.
+    #[serde(flatten)]
+    extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Bag {
@@ -32,24 +40,31 @@ impl Bag {
         self.order.len().saturating_sub(self.pos)
     }
 
-    /// Reconcile the bag with the files that currently exist. Missing files are
-    /// dropped; new ones are inserted at random spots in the unseen part, so they
-    /// show up during this cycle rather than waiting for the next.
-    pub fn sync(&mut self, library: &[String], rng: &mut fastrand::Rng) {
+    /// Reconcile the bag with the files that currently exist. New ones are
+    /// inserted at random spots in the unseen part, so they show up during this
+    /// cycle rather than waiting for the next. Missing files leave the order and
+    /// history only if the scan was `complete`: a folder that failed to read
+    /// isn't a folder that was emptied. Favorites (like bans) are never dropped
+    /// here; a file that comes back, or a folder switched back to, keeps them.
+    pub fn sync(&mut self, library: &[String], complete: bool, rng: &mut fastrand::Rng) {
         let available: HashSet<&str> = library.iter().map(String::as_str).collect();
 
-        let mut kept = Vec::with_capacity(self.order.len());
-        let mut new_pos = 0;
-        for (i, path) in self.order.drain(..).enumerate() {
-            if available.contains(path.as_str()) {
-                if i < self.pos {
-                    new_pos += 1;
+        if complete {
+            let mut kept = Vec::with_capacity(self.order.len());
+            let mut new_pos = 0;
+            for (i, path) in self.order.drain(..).enumerate() {
+                if available.contains(path.as_str()) {
+                    if i < self.pos {
+                        new_pos += 1;
+                    }
+                    kept.push(path);
                 }
-                kept.push(path);
             }
+            self.order = kept;
+            self.pos = new_pos;
+            self.history.retain(|p| available.contains(p.as_str()));
+            self.cursor = self.cursor.min(self.history.len().saturating_sub(1));
         }
-        self.order = kept;
-        self.pos = new_pos;
 
         let known: HashSet<&str> = self.order.iter().map(String::as_str).collect();
         let fresh: Vec<String> = library
@@ -61,10 +76,6 @@ impl Bag {
             let at = rng.usize(self.pos..=self.order.len());
             self.order.insert(at, path);
         }
-
-        self.history.retain(|p| available.contains(p.as_str()));
-        self.cursor = self.cursor.min(self.history.len().saturating_sub(1));
-        self.favorites.retain(|p| available.contains(p.as_str()));
     }
 
     /// Advance to the next wallpaper. Walks forward through history first if the
@@ -234,7 +245,7 @@ mod tests {
         let library = lib(1000);
         let mut rng = fastrand::Rng::with_seed(1);
         let mut bag = Bag::default();
-        bag.sync(&library, &mut rng);
+        bag.sync(&library, true, &mut rng);
         let mut seen = HashSet::new();
         for _ in 0..1000 {
             let p = bag.next(&library, &all, 1, &mut rng).unwrap();
@@ -248,7 +259,7 @@ mod tests {
         let library = lib(500);
         let mut rng = fastrand::Rng::with_seed(7);
         let mut bag = Bag::default();
-        bag.sync(&library, &mut rng);
+        bag.sync(&library, true, &mut rng);
         let first: Vec<String> = (0..500).map(|_| bag.next(&library, &all, 1, &mut rng).unwrap()).collect();
         let tail: HashSet<&String> = first[450..].iter().collect();
         for _ in 0..50 {
@@ -262,12 +273,12 @@ mod tests {
         let mut library = lib(100);
         let mut rng = fastrand::Rng::with_seed(3);
         let mut bag = Bag::default();
-        bag.sync(&library, &mut rng);
+        bag.sync(&library, true, &mut rng);
         for _ in 0..50 {
             bag.next(&library, &all, 1, &mut rng);
         }
         library.push("/w/new.jpg".into());
-        bag.sync(&library, &mut rng);
+        bag.sync(&library, true, &mut rng);
         let rest: Vec<String> = (0..51).map(|_| bag.next(&library, &all, 1, &mut rng).unwrap()).collect();
         assert!(rest.contains(&"/w/new.jpg".to_string()));
         assert_eq!(bag.cycle, 0, "should still be in the first cycle");
@@ -278,9 +289,9 @@ mod tests {
         let mut library = lib(10);
         let mut rng = fastrand::Rng::with_seed(4);
         let mut bag = Bag::default();
-        bag.sync(&library, &mut rng);
+        bag.sync(&library, true, &mut rng);
         library.retain(|p| p != "/w/00003.jpg");
-        bag.sync(&library, &mut rng);
+        bag.sync(&library, true, &mut rng);
         for _ in 0..30 {
             assert_ne!(bag.next(&library, &all, 1, &mut rng).unwrap(), "/w/00003.jpg");
         }
@@ -291,7 +302,7 @@ mod tests {
         let library = lib(20);
         let mut rng = fastrand::Rng::with_seed(5);
         let mut bag = Bag::default();
-        bag.sync(&library, &mut rng);
+        bag.sync(&library, true, &mut rng);
         let a = bag.next(&library, &all, 1, &mut rng).unwrap();
         let b = bag.next(&library, &all, 1, &mut rng).unwrap();
         assert_eq!(bag.previous(&all).unwrap(), a);
@@ -304,7 +315,7 @@ mod tests {
         let library = lib(20);
         let mut rng = fastrand::Rng::with_seed(7);
         let mut bag = Bag::default();
-        bag.sync(&library, &mut rng);
+        bag.sync(&library, true, &mut rng);
         assert_eq!(bag.peek_previous(&all), None);
         for _ in 0..5 {
             bag.next(&library, &all, 1, &mut rng);
@@ -320,7 +331,7 @@ mod tests {
         let library = lib(50);
         let mut rng = fastrand::Rng::with_seed(6);
         let mut bag = Bag::default();
-        bag.sync(&library, &mut rng);
+        bag.sync(&library, true, &mut rng);
         bag.next(&library, &all, 1, &mut rng);
         for _ in 0..40 {
             let peeked = bag.peek(&all).map(str::to_owned);
@@ -334,7 +345,7 @@ mod tests {
         let library = lib(5);
         let mut rng = fastrand::Rng::with_seed(8);
         let mut bag = Bag::default();
-        bag.sync(&library, &mut rng);
+        bag.sync(&library, true, &mut rng);
         let first = bag.next(&library, &all, 1, &mut rng).unwrap();
         bag.ban_current();
         for _ in 0..30 {
@@ -347,15 +358,58 @@ mod tests {
         let library = lib(30);
         let mut rng = fastrand::Rng::with_seed(9);
         let mut bag = Bag::default();
-        bag.sync(&library, &mut rng);
+        bag.sync(&library, true, &mut rng);
         for _ in 0..10 {
             bag.next(&library, &all, 1, &mut rng);
         }
         let json = serde_json::to_string(&bag).unwrap();
         let mut restored: Bag = serde_json::from_str(&json).unwrap();
-        restored.sync(&library, &mut rng);
+        restored.sync(&library, true, &mut rng);
         assert_eq!(restored.current(), bag.current());
         assert_eq!(restored.peek(&all), bag.peek(&all));
+    }
+
+    // DS-02: a missing or switched folder must not cost favorites or history.
+    #[test]
+    fn scans_never_drop_favorites_and_failed_scans_keep_history() {
+        let library = lib(20);
+        let mut rng = fastrand::Rng::with_seed(11);
+        let mut bag = Bag::default();
+        bag.sync(&library, true, &mut rng);
+        for _ in 0..5 {
+            bag.next(&library, &all, 1, &mut rng);
+        }
+        bag.toggle_favorite();
+        let fav = bag.current().unwrap().to_owned();
+
+        bag.sync(&[], false, &mut rng);
+        assert_eq!(bag.current(), Some(fav.as_str()), "incomplete scan keeps history");
+        assert!(bag.favorites.contains(&fav));
+
+        // Another folder, read completely: history moves on, the favorite stays.
+        bag.sync(&lib(0), true, &mut rng);
+        assert!(bag.current().is_none());
+        assert!(bag.favorites.contains(&fav));
+        bag.sync(&library, true, &mut rng);
+        let p = loop {
+            let p = bag.next(&library, &all, 1, &mut rng).unwrap();
+            if p == fav {
+                break p;
+            }
+        };
+        assert_eq!(p, fav);
+        assert!(bag.is_favorite(), "back in the old folder, still a favorite");
+    }
+
+    // DS-01: fields from a newer version survive a load and save.
+    #[test]
+    fn unknown_fields_survive() {
+        let json = r#"{"order":[],"pos":0,"history":[],"cursor":0,"favorites":[],"banned":[],"version":9,"ratings":{"/w/a.jpg":5}}"#;
+        let bag: Bag = serde_json::from_str(json).unwrap();
+        assert_eq!(bag.version, 9);
+        let back = serde_json::to_value(&bag).unwrap();
+        assert_eq!(back["ratings"]["/w/a.jpg"], 5);
+        assert_eq!(back["version"], 9);
     }
 
     #[test]
@@ -363,7 +417,7 @@ mod tests {
         let library = lib(100);
         let mut rng = fastrand::Rng::with_seed(10);
         let mut bag = Bag::default();
-        bag.sync(&library, &mut rng);
+        bag.sync(&library, true, &mut rng);
         bag.favorites.insert("/w/00042.jpg".into());
         let mut hits = 0;
         for _ in 0..2000 {

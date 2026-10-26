@@ -27,6 +27,10 @@ pub fn kind_of(path: &Path) -> Option<Kind> {
 pub struct Scan {
     pub files: Vec<String>,
     pub dirs: Vec<PathBuf>,
+    /// The folder itself could be read. If not, `files` means nothing.
+    pub found: bool,
+    /// Every folder and entry under it could be read too.
+    pub complete: bool,
 }
 
 /// Walk `root` and return every wallpaper path (sorted) plus every directory
@@ -34,16 +38,31 @@ pub struct Scan {
 pub fn scan(root: &Path, recursive: bool) -> Scan {
     let mut files = Vec::new();
     let mut dirs = Vec::new();
+    let mut found = true;
+    let mut complete = true;
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            if dir == root {
+                found = false;
+            }
+            complete = false;
+            continue;
+        };
         dirs.push(dir);
-        for entry in entries.flatten() {
+        for entry in entries {
+            let Ok(entry) = entry else {
+                complete = false;
+                continue;
+            };
             let name = entry.file_name();
             if name.as_encoded_bytes().first() == Some(&b'.') {
                 continue;
             }
-            let Ok(ft) = entry.file_type() else { continue };
+            let Ok(ft) = entry.file_type() else {
+                complete = false;
+                continue;
+            };
             let path = entry.path();
             // Follow symlinks for files, but not for directories (avoids loops).
             if ft.is_dir() {
@@ -58,7 +77,7 @@ pub fn scan(root: &Path, recursive: bool) -> Scan {
         }
     }
     files.sort_unstable();
-    Scan { files, dirs }
+    Scan { files, dirs, found, complete }
 }
 
 /// True if a GIF has more than one frame. Walks the block structure without
@@ -158,6 +177,9 @@ mod tests {
         let s = scan(&dir, true);
         assert_eq!(s.files.len(), 4);
         assert_eq!(scan(&dir, false).files.len(), 3);
+        assert!(s.found && s.complete);
         std::fs::remove_dir_all(&dir).unwrap();
+        let gone = scan(&dir, true);
+        assert!(!gone.found && !gone.complete);
     }
 }
