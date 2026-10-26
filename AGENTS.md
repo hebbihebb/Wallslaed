@@ -47,7 +47,7 @@ tools/isolated-session.sh --install <scratch-dir> <test-script>
 - **Never** hand-roll `dbus-run-session -- script` with `export HOME=...` inside the script. Services the bus starts on demand (dconf-service above all) inherit the bus's environment, so their writes land in the real home.
 - If the script prints `WARNING: real settings now refer to the scratch folder`, stop and tell the user. A `NOTE` listing only `org/gnome/desktop/background` is the real daemon rotating, not a leak.
 - Make test media with `ffmpeg -f lavfi` (testsrc2 plus sine); never copy the user's files.
-- Keep scratch folders in the session scratchpad; the script refuses folders inside the real home's config.
+- Keep scratch folders in the session scratchpad, or in `.scratch/` when the results must survive a reboot (see Git); the script refuses folders inside the real home's config.
 
 ## Code Rules
 
@@ -74,6 +74,7 @@ Hand back evidence, not homework: what passed, what failed, what was **not** tes
 ## Git
 
 - `main` holds accepted work only. Work happens on `feature/<name>` or `fix/<name>` branches (Codex: `codex/<name>`).
+- **Worktrees go inside the repo**, under `.worktrees/<branch-name>` (git-ignored), never in `/tmp`. Testing often needs a logout, and on this machine that currently means a reboot, which clears `/tmp`. Evidence that must outlive the session (audit probes, scripts, logs) goes in `.scratch/<name>/`, also git-ignored. Remove a worktree with `git worktree remove` once its branch is merged or abandoned.
 - Commit each testable unit on its branch; never end a session with large uncommitted work without recording its state in `CURRENT_TASKS.md`.
 - Never push, force-push, delete branches or rewrite published history without explicit approval. The remote is `github.com/hebbihebb/Wallslaed` (private).
 - The user prefers plain-language explanations of Git decisions.
