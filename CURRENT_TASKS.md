@@ -1,18 +1,18 @@
 # Current Tasks
 
-Last updated: 2026-10-26 (GNOME 51 port accepted; JPEG XL/AVIF/HEIC converted with glycin).
+Last updated: 2026-10-26 (glycin conversion installed and accepted).
 
 ## Git state
 
 - `main`: accepted work, including the menu race fix and the new transitions (merged 2026-10-25), pushed to `origin`.
-- `fix/random-and-settings` (2026-10-26): off `main`, see below. Not merged; installed.
+- `fix/random-and-settings` (2026-10-26): off `main`, see below. Accepted; not merged.
 - `fix/gnome-51` (2026-10-26): off `fix/random-and-settings`, the GNOME 51 port, see below. Installed and accepted; not merged.
-- `feature/glycin-prepare` (2026-10-26): off `fix/gnome-51`, see below. Not merged, not installed.
+- `feature/glycin-prepare` (2026-10-26): off `fix/gnome-51`, see below. Installed and accepted; not merged. It carries `fix/random-and-settings` and `fix/gnome-51`, so merging it brings all three into `main`.
 - `feature/shell-blur`: shelved until the user has time to test it properly; see "Shelved" below. Not merged.
-- Installed in the live session: `fix/gnome-51` (`bf0d962`), installed 2026-10-26 on Fedora 45 / GNOME Shell 51.0.
-- Backups: `~/.local/share/wallslaed-backups/installed-random-settings-5a7d4ac/` (the last GNOME 50 build), `installed-main-480b01e/` (the build before this fix), `installed-transitions-2026-10-25/`, `installed-main-761c5ae/` (the build before the new transitions) and `installed-2026-10-25/` (before the menu race fix); each has a `restore.sh`.
+- Installed in the live session: `feature/glycin-prepare` (`f1f3137`), installed 2026-10-26 on Fedora 45 / GNOME Shell 51.0.
+- Backups: `~/.local/share/wallslaed-backups/installed-gnome51-bf0d962/` (before the glycin conversion), `installed-random-settings-5a7d4ac/` (the last GNOME 50 build), `installed-main-480b01e/` (the build before this fix), `installed-transitions-2026-10-25/`, `installed-main-761c5ae/` (the build before the new transitions) and `installed-2026-10-25/` (before the menu race fix); each has a `restore.sh`.
 
-## In progress: `feature/glycin-prepare` (2026-10-26)
+## Accepted: `feature/glycin-prepare` (2026-10-26)
 
 User report on the installed GNOME 51 build: the pointer "sticks to the menu for a second" on Next Wallpaper. Watching 34 real changes, GNOME Shell's CPU jumped to 50-78% for up to 1.5 s on JPEG XL wallpapers (401 of 1536 files, 4000-5500 px wide), which the daemon couldn't read and passed to GNOME untouched; most JPEG/WebP changes stayed under 40%. The screen is 3840x2160, so prescale rarely shrinks anything else.
 
@@ -24,7 +24,7 @@ User report on the installed GNOME 51 build: the pointer "sticks to the menu for
 
 Cost: 136 more crates (zbus, moxcms, gufo...), links libseccomp and fontconfig; release binary 4.9 to 7.7 MB. Loader processes idle out after 30 s (glycin's pool).
 
-Not tested: AVIF and HEIC (only JXL generated), the real 4K desktop, whether the pointer stall is gone.
+Installed and watched on the real desktop: 37 changes, no JXL reached GNOME, the 1.5 s stalls at 52-78% shell CPU are gone (changes now cost 30-45% for about half a second, as plain JPEGs did); the user reports it feels smooth. Not tested: AVIF and HEIC (none in the library).
 
 ## Accepted: `fix/gnome-51` (2026-10-26)
 
@@ -44,7 +44,7 @@ A headless GNOME Shell 51 segfaults on shutdown if a client window is still open
 
 User tested the installed build 2026-10-26: transitions look fine on the NVIDIA desktop, the menu works (also during a transition), music videos play. `ptrace_scope` is 0 on this install, so `eu-stack` still works without `sudo`.
 
-## In progress: `fix/random-and-settings` (2026-10-26)
+## Accepted: `fix/random-and-settings` (2026-10-26)
 
 User reports: Random never played the newer effects, and both "settings" items in the desktop menu open GNOME Settings (they are GNOME's own: "Display Settings" and "Settings", which reopens its last page).
 
