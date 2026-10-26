@@ -668,9 +668,17 @@ fn preload(d: &Shared) {
 fn set_background(s: &Daemon, picture: Option<&Path>) {
     let Some(pic) = picture else { return };
     let uri = gio::File::for_path(pic).uri();
-    // Set both so dark mode doesn't keep showing the old one.
+    // Set both so dark mode doesn't keep showing the old one, in one write.
+    // GNOME Shell (GJS 1.90 and earlier) can deadlock when a settings change
+    // signal arrives while its garbage collector frees the background a
+    // change replaced (GJS MR !1134, not merged yet). In a headless shell
+    // without Wallslæd, changes every 0.35 s hung it within 20-100 changes
+    // in 4 of 4 runs with two writes, and 0 of 3 runs with one. Fewer, not
+    // none: with the extension's own garbage, it still hung once.
+    s.background.delay();
     let _ = s.background.set_string("picture-uri", &uri);
     let _ = s.background.set_string("picture-uri-dark", &uri);
+    s.background.apply();
 }
 
 fn restart_timer(d: &Shared) {
