@@ -1,15 +1,13 @@
 # Current Tasks
 
-Last updated: 2026-10-26 (glycin conversion installed and accepted).
+Last updated: 2026-10-26 (Random/settings fix, GNOME 51 port and glycin conversion merged into `main`).
 
 ## Git state
 
-- `main`: accepted work, including the menu race fix and the new transitions (merged 2026-10-25), pushed to `origin`.
-- `fix/random-and-settings` (2026-10-26): off `main`, see below. Accepted; not merged.
-- `fix/gnome-51` (2026-10-26): off `fix/random-and-settings`, the GNOME 51 port, see below. Installed and accepted; not merged.
-- `feature/glycin-prepare` (2026-10-26): off `fix/gnome-51`, see below. Installed and accepted; not merged. It carries `fix/random-and-settings` and `fix/gnome-51`, so merging it brings all three into `main`.
+- `main`: accepted work, including the Random/settings fix, the GNOME 51 port and the glycin conversion (merged 2026-10-26), pushed to `origin`.
+- `fix/random-and-settings`, `fix/gnome-51`, `feature/glycin-prepare`: merged into `main` (fast-forward) and pushed.
 - `feature/shell-blur`: shelved until the user has time to test it properly; see "Shelved" below. Not merged.
-- Installed in the live session: `feature/glycin-prepare` (`f1f3137`), installed 2026-10-26 on Fedora 45 / GNOME Shell 51.0.
+- Installed in the live session: `main` as of `f1f3137` (`feature/glycin-prepare`), installed 2026-10-26 on Fedora 45 / GNOME Shell 51.0.
 - Backups: `~/.local/share/wallslaed-backups/installed-gnome51-bf0d962/` (before the glycin conversion), `installed-random-settings-5a7d4ac/` (the last GNOME 50 build), `installed-main-480b01e/` (the build before this fix), `installed-transitions-2026-10-25/`, `installed-main-761c5ae/` (the build before the new transitions) and `installed-2026-10-25/` (before the menu race fix); each has a `restore.sh`.
 
 ## Accepted: `feature/glycin-prepare` (2026-10-26)
