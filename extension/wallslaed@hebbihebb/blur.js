@@ -4,7 +4,8 @@
 // monitor, shared by every surface, and no blur shader running. Only when
 // there is no baked copy (a format the daemon can't read, or no daemon) does
 // a GPU blur stand in, cached by Clutter until the next wallpaper. It blurs
-// GNOME's own background object, so the full-size picture isn't loaded twice.
+// GNOME's own background object, so the full-size picture isn't loaded twice,
+// once per monitor: the surfaces show clones of that one blurred actor.
 
 import Clutter from 'gi://Clutter';
 import Cogl from 'gi://Cogl';
@@ -37,8 +38,11 @@ export class BlurLayers {
         this._gnomeBackground = null; // GNOME's background the GPU blur shows
         this._gnomeIds = [];
         this._reloadId = 0;
-        // Per monitor: {content, gpu}. Surfaces show these.
+        // Per monitor: an Entry. Surfaces show these.
         this._contents = [];
+        // Holds the GPU-blurred actors that surfaces clone; never shown itself.
+        this._holder = new Clutter.Actor({name: 'wallslaed-blur-sources', visible: false});
+        Main.layoutManager.uiGroup.add_child(this._holder);
         this._overview = null; // {group, layers: [Layer]}
         this._panel = null; // {wrapper, layer}
         this._signals = [];
@@ -166,10 +170,12 @@ export class BlurLayers {
     }
 
     _apply(makeBackground) {
-        this._contents = Main.layoutManager.monitors.map((_m, index) => {
+        this._contents.forEach(entry => entry.retire());
+        this._contents = Main.layoutManager.monitors.map((monitor, index) => {
             const content = Meta.BackgroundContent.new(global.display, index);
             content.background = makeBackground();
-            return {content, gpu: this._source.gpu};
+            return new Entry(content, monitor, this._source.gpu ? this._holder : null,
+                () => this._effect());
         });
         this._overview?.layers.forEach(layer => layer.show(this._contents[layer.index]));
         this._panel?.layer.show(this._contents[this._panel.layer.index]);
@@ -203,7 +209,7 @@ export class BlurLayers {
     _createOverview() {
         const group = new Clutter.Actor({name: 'wallslaed-overview-blur'});
         const layers = Main.layoutManager.monitors.map((monitor, index) => {
-            const layer = new Layer(index, monitor, () => this._effect());
+            const layer = new Layer(index, monitor);
             layer.actor.set_position(monitor.x, monitor.y);
             group.add_child(layer.actor);
             return layer;
@@ -227,7 +233,7 @@ export class BlurLayers {
         // A zero-size holder, so the panel box's layout gives it no room; the
         // monitor-sized layer inside paints past it, clipped to the panel.
         const wrapper = new Clutter.Actor({name: 'wallslaed-panel-blur', width: 0, height: 0});
-        const layer = new Layer(monitor.index, monitor, () => this._effect());
+        const layer = new Layer(monitor.index, monitor);
         wrapper.add_child(layer.actor);
         panelBox.insert_child_at_index(wrapper, 0);
         const place = () => {
@@ -266,6 +272,7 @@ export class BlurLayers {
     _clearSource() {
         this._cancelLoad();
         this._source = null;
+        this._contents.forEach(entry => entry.retire());
         this._contents = [];
     }
 
@@ -275,17 +282,61 @@ export class BlurLayers {
         this._signals = [];
         this._destroySurfaces();
         this._clearSource();
+        this._holder.destroy();
         Main.uiGroup.remove_style_class_name(DASH_CLASS);
         this._background = null;
+    }
+}
+
+// One monitor's blurred wallpaper. A GPU-blurred one is a single actor in the
+// holder that every surface clones, so Clutter blurs it once, not per
+// surface. It goes once it has been replaced and no surface shows it anymore.
+class Entry {
+    constructor(content, monitor, holder, makeEffect) {
+        this.content = content;
+        this.source = null;
+        this._clones = 0;
+        this._retired = false;
+        if (holder) {
+            this.source = new Clutter.Actor({content, width: monitor.width, height: monitor.height});
+            this.source.add_effect(makeEffect());
+            // GNOME may destroy it first when the shell shuts down.
+            this.source.connect('destroy', () => (this.source = null));
+            holder.add_child(this.source);
+        }
+    }
+
+    // A child actor for one surface.
+    makeChild(width, height) {
+        if (!this.source)
+            return new Clutter.Actor({content: this.content, width, height});
+        const clone = new Clutter.Clone({source: this.source, width, height});
+        this._clones++;
+        clone.connect('destroy', () => {
+            this._clones--;
+            this._maybeDestroy();
+        });
+        return clone;
+    }
+
+    retire() {
+        this._retired = true;
+        this._maybeDestroy();
+    }
+
+    _maybeDestroy() {
+        if (this._retired && this._clones === 0 && this.source) {
+            this.source.destroy();
+            this.source = null;
+        }
     }
 }
 
 // One monitor's blurred wallpaper on one surface. New wallpapers fade in on
 // top of the old one, which goes once covered.
 class Layer {
-    constructor(index, monitor, makeEffect) {
+    constructor(index, monitor) {
         this.index = index;
-        this._makeEffect = makeEffect;
         this.actor = new Clutter.Actor({width: monitor.width, height: monitor.height});
         // GNOME may destroy it first when the shell shuts down.
         this.actor.connect('destroy', () => (this.actor = null));
@@ -295,13 +346,7 @@ class Layer {
     show(entry) {
         if (!entry || !this.actor)
             return;
-        const child = new Clutter.Actor({
-            content: entry.content,
-            width: this.actor.width,
-            height: this.actor.height,
-        });
-        if (entry.gpu)
-            child.add_effect(this._makeEffect());
+        const child = entry.makeChild(this.actor.width, this.actor.height);
         this.actor.add_child(child);
 
         const fade = !!this._current && this.actor.mapped;
