@@ -11,7 +11,7 @@ use glib::{ControlFlow, SourceId, Variant, VariantDict};
 
 use crate::library::{self, Kind};
 use crate::media::{self, MediaState};
-use crate::prepare::{self, Job, Prepared};
+use crate::prepare::{self, Blur, Job, Prepared};
 use crate::shuffle::Bag;
 use crate::{BUS_NAME, IFACE, OBJECT_PATH, SCHEMA};
 
@@ -373,6 +373,7 @@ fn connect_settings(d: &Shared) {
             d1.borrow_mut().preloaded = None;
             advance(&d1, Step::Reload);
         }
+        "blur-strength" | "blur-brightness" | "blur-overview" | "blur-panel" => rebake(&d1),
         _ => {}
     });
 }
@@ -552,7 +553,51 @@ fn apply(d: &Shared, p: Prepared) {
     }
     emit_changed(d);
     restart_timer(d);
-    preload(d);
+    let stale = {
+        let s = d.borrow();
+        s.current.as_ref().is_some_and(|c| c.baked_with != s.blur())
+    };
+    if stale {
+        rebake(d);
+    } else {
+        preload(d);
+    }
+}
+
+/// Bake the blur again for what's on screen, after its settings changed.
+fn rebake(d: &Shared) {
+    let (blur, cache_dir, current, media) = {
+        let mut s = d.borrow_mut();
+        s.preloaded = None;
+        let pic = |p: &Option<Prepared>| p.as_ref().and_then(|p| p.picture.clone());
+        (s.blur(), s.cache_dir.clone(), pic(&s.current), pic(&s.media_now))
+    };
+    let d = d.clone();
+    glib::spawn_future_local(async move {
+        let bake = move |pic: &Option<PathBuf>| {
+            prepare::blur_only(pic.as_deref()?, &cache_dir, blur?)
+        };
+        let (cur, med) = (current.clone(), media.clone());
+        let Ok((current_blur, media_blur)) =
+            gio::spawn_blocking(move || (bake(&cur), bake(&med))).await
+        else {
+            return;
+        };
+        {
+            let mut s = d.borrow_mut();
+            // Only if the same pictures are still up; a newer one brings its own blur.
+            if let Some(c) = s.current.as_mut().filter(|c| c.picture == current) {
+                c.blurred = current_blur;
+                c.baked_with = blur;
+            }
+            if let Some(m) = s.media_now.as_mut().filter(|m| m.picture == media) {
+                m.blurred = media_blur;
+                m.baked_with = blur;
+            }
+        }
+        emit_changed(&d);
+        preload(&d);
+    });
 }
 
 /// Prepare the next wallpaper now so switching later is instant.
@@ -570,7 +615,8 @@ fn preload(d: &Shared) {
     glib::spawn_future_local(async move {
         if let Ok(Ok(p)) = gio::spawn_blocking(move || prepare::prepare(&job)).await {
             let mut s = d.borrow_mut();
-            if s.generation == generation {
+            // Dropped if the blur settings changed while it was being prepared.
+            if s.generation == generation && p.baked_with == s.blur() {
                 s.preloaded = Some(p);
             }
         }
@@ -628,6 +674,7 @@ fn state_variant(s: &Daemon) -> Variant {
     dict.insert("picture", cur.map(|c| path_str(&c.picture)).unwrap_or_default());
     dict.insert("playable", cur.map(|c| path_str(&c.playable)).unwrap_or_default());
     dict.insert("animated", cur.is_some_and(|c| c.playable.is_some()));
+    dict.insert("blurred", cur.map(|c| path_str(&c.blurred)).unwrap_or_default());
     dict.insert("paused", s.settings.boolean("paused"));
     dict.insert("favorite", s.bag.is_favorite());
     dict.insert("count", s.library.len() as u32);
@@ -647,6 +694,7 @@ fn state_variant(s: &Daemon) -> Variant {
         dict.insert("picture", path_str(&m.picture));
         dict.insert("playable", path_str(&m.playable));
         dict.insert("animated", true);
+        dict.insert("blurred", path_str(&m.blurred));
     }
     dict.insert("audio", s.media_now.is_some());
     dict.end()
@@ -949,6 +997,16 @@ impl Daemon {
             screen: self.screen,
             prescale: self.settings.boolean("prescale"),
             cache_dir: self.cache_dir.clone(),
+            blur: self.blur(),
         }
+    }
+
+    /// The blur the extension shows, if any surface uses the baked one.
+    fn blur(&self) -> Option<Blur> {
+        let s = &self.settings;
+        (s.boolean("blur-overview") || s.boolean("blur-panel")).then(|| Blur {
+            strength: s.uint("blur-strength"),
+            brightness: s.double("blur-brightness"),
+        })
     }
 }

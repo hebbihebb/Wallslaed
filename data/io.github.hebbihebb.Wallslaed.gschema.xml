@@ -93,5 +93,28 @@
       <default>''</default>
       <summary>Pixabay API key, for browsing animated wallpapers</summary>
     </key>
+    <key name="blur-strength" type="u">
+      <range min="0" max="100"/>
+      <default>30</default>
+      <summary>Blur strength, in pixels</summary>
+    </key>
+    <key name="blur-brightness" type="d">
+      <range min="0.2" max="1"/>
+      <default>0.6</default>
+      <summary>Brightness of blurred surfaces</summary>
+      <description>1 leaves colours alone; lower darkens them so text stays readable.</description>
+    </key>
+    <key name="blur-overview" type="b">
+      <default>true</default>
+      <summary>Blur the wallpaper behind the overview</summary>
+    </key>
+    <key name="blur-panel" type="b">
+      <default>true</default>
+      <summary>Show the blurred wallpaper behind the top bar</summary>
+    </key>
+    <key name="blur-dash" type="b">
+      <default>true</default>
+      <summary>Make the dash see-through over the blurred overview</summary>
+    </key>
   </schema>
 </schemalist>

@@ -27,6 +27,17 @@ pub struct Job {
     pub screen: (u32, u32),
     pub prescale: bool,
     pub cache_dir: PathBuf,
+    /// Also bake a blurred copy for the extension's blur, if set.
+    pub blur: Option<Blur>,
+}
+
+/// How the extension wants its blurred wallpaper.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Blur {
+    /// Gaussian sigma, in pixels at screen size.
+    pub strength: u32,
+    /// 0 is black, 1 leaves the colours alone.
+    pub brightness: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -36,6 +47,11 @@ pub struct Prepared {
     pub picture: Option<PathBuf>,
     /// For animated wallpapers: the file the player should loop.
     pub playable: Option<PathBuf>,
+    /// A small, blurred and darkened copy of `picture`, if one was asked for
+    /// and the picture could be read.
+    pub blurred: Option<PathBuf>,
+    /// The settings `blurred` was asked for with, even if baking failed.
+    pub baked_with: Option<Blur>,
 }
 
 static TRANSCODING: AtomicBool = AtomicBool::new(false);
@@ -57,8 +73,17 @@ pub fn prepare(job: &Job) -> Result<Prepared, String> {
             source: job.source.clone(),
             picture: poster(job, &key),
             playable: Some(src.to_path_buf()),
+            blurred: None,
+        baked_with: None,
         }),
     };
+    let result = result.map(|mut p| {
+        if let (Some(blur), Some(picture)) = (job.blur, &p.picture) {
+            p.blurred = bake_blur(picture, &job.cache_dir, blur);
+        }
+        p.baked_with = job.blur;
+        p
+    });
     trim_cache(&job.cache_dir);
     // Decoding big images grows the heap; give it back to the OS.
     unsafe {
@@ -73,6 +98,8 @@ fn prepare_static(job: &Job, key: &str) -> Result<Prepared, String> {
         source: job.source.clone(),
         picture: Some(picture),
         playable: None,
+        blurred: None,
+        baked_with: None,
     };
     if !job.prescale {
         return Ok(done(src.to_path_buf()));
@@ -141,6 +168,8 @@ fn prepare_gif(job: &Job, key: &str) -> Result<Prepared, String> {
         source: job.source.clone(),
         picture: poster(job, key),
         playable: Some(playable),
+        blurred: None,
+        baked_with: None,
     })
 }
 
@@ -174,6 +203,83 @@ fn poster(job: &Job, key: &str) -> Option<PathBuf> {
         let _ = std::fs::remove_file(&tmp);
         None
     }
+}
+
+/// Bake the blur for `picture`; see [`bake_blur`]. Takes the decode lock, for
+/// callers outside [`prepare`].
+pub fn blur_only(picture: &Path, cache_dir: &Path, blur: Blur) -> Option<PathBuf> {
+    let _guard = JOB_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    std::fs::create_dir_all(cache_dir).ok()?;
+    let out = bake_blur(picture, cache_dir, blur);
+    trim_cache(cache_dir);
+    unsafe {
+        libc::malloc_trim(0);
+    }
+    out
+}
+
+/// Write a blurred, darkened copy of `picture` at a fraction of its size, so
+/// GNOME Shell can show blur by scaling up a tiny texture instead of running a
+/// blur shader over a full-screen copy. A blurred image has no fine detail, so
+/// nothing is lost. The aspect ratio is kept: the Shell crops it like the
+/// wallpaper. PNG, because JPEG blocks would show once scaled up.
+fn bake_blur(picture: &Path, cache_dir: &Path, blur: Blur) -> Option<PathBuf> {
+    let meta = std::fs::metadata(picture).ok()?;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    picture.hash(&mut h);
+    meta.len().hash(&mut h);
+    meta.modified().ok().hash(&mut h);
+    let brightness = blur.brightness.clamp(0.0, 1.0);
+    let out = cache_dir.join(format!(
+        "{:016x}-blur-{}-{}.png",
+        h.finish(),
+        blur.strength,
+        (brightness * 100.0).round() as u32
+    ));
+    if out.exists() {
+        touch(&out);
+        return Some(out);
+    }
+
+    // Shrink so the blur is about 4 pixels wide at the small size: smooth once
+    // scaled up, and as little work as possible.
+    let factor = (blur.strength as f64 / 4.0).clamp(1.0, 8.0);
+    let mut decoder = reader(picture).ok()?.into_decoder().ok()?;
+    let orientation = decoder.orientation().ok()?;
+    let mut img = DynamicImage::from_decoder(decoder).ok()?;
+    img.apply_orientation(orientation);
+    let img = DynamicImage::ImageRgb8(img.into_rgb8());
+    let tw = ((img.width() as f64 / factor).round() as u32).max(1);
+    let th = ((img.height() as f64 / factor).round() as u32).max(1);
+    let mut small = DynamicImage::new_rgb8(tw, th);
+    Resizer::new()
+        .resize(
+            &img,
+            &mut small,
+            &ResizeOptions::new().resize_alg(ResizeAlg::Convolution(FilterType::Bilinear)),
+        )
+        .ok()?;
+    drop(img);
+
+    let mut small = small.into_rgb8();
+    if blur.strength > 0 {
+        small = image::imageops::fast_blur(&small, (blur.strength as f64 / factor) as f32);
+    }
+    if brightness < 1.0 {
+        for px in small.pixels_mut() {
+            for c in &mut px.0 {
+                *c = (*c as f64 * brightness).round() as u8;
+            }
+        }
+    }
+
+    let tmp = out.with_extension("png.part");
+    if small.save_with_format(&tmp, image::ImageFormat::Png).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        return None;
+    }
+    std::fs::rename(&tmp, &out).ok()?;
+    Some(out)
 }
 
 fn transcode_gif_later(src: PathBuf, out: PathBuf, max_width: u32) {
@@ -264,6 +370,7 @@ mod tests {
             screen: (1920, 1080),
             prescale: true,
             cache_dir: cache.clone(),
+            blur: None,
         };
         let out = prepare(&job(&big)).unwrap();
         let pic = out.picture.unwrap();
@@ -274,6 +381,50 @@ mod tests {
 
         let out = prepare(&job(&small)).unwrap();
         assert_eq!(out.picture.unwrap(), small, "small images are used as-is");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn bakes_a_small_dark_blurred_copy() {
+        let dir = std::env::temp_dir().join(format!("wallslaed-blur-{}", std::process::id()));
+        let cache = dir.join("cache");
+        std::fs::create_dir_all(&dir).unwrap();
+        // White on the left, black on the right: blurring must soften the edge.
+        let src = dir.join("half.png");
+        image::RgbImage::from_fn(1920, 1080, |x, _| {
+            if x < 960 { image::Rgb([255, 255, 255]) } else { image::Rgb([0, 0, 0]) }
+        })
+        .save(&src)
+        .unwrap();
+
+        let job = Job {
+            source: src.to_str().unwrap().into(),
+            screen: (1920, 1080),
+            prescale: true,
+            cache_dir: cache.clone(),
+            blur: Some(Blur { strength: 32, brightness: 0.5 }),
+        };
+        let out = prepare(&job).unwrap();
+        let blurred = out.blurred.expect("a blurred copy");
+        assert!(blurred.starts_with(&cache));
+        let img = image::open(&blurred).unwrap().into_rgb8();
+        assert_eq!(img.dimensions(), (240, 135), "an eighth of the size, same aspect");
+        // Darkened: far-left white becomes about half.
+        let left = img.get_pixel(2, 67).0[0];
+        assert!((120..=135).contains(&left), "brightness applied, got {left}");
+        // Blurred: the middle is grey, not a hard edge.
+        let mid = img.get_pixel(120, 67).0[0];
+        assert!((40..=90).contains(&mid), "edge softened, got {mid}");
+        let near = img.get_pixel(116, 67).0[0];
+        assert!(near > mid && near < left, "a gradient across the edge");
+
+        // Asking again reuses the file.
+        let again = blur_only(out.picture.as_deref().unwrap(), &cache, job.blur.unwrap());
+        assert_eq!(again.as_deref(), Some(blurred.as_path()));
+
+        // No blur asked for, none made.
+        let plain = prepare(&Job { blur: None, ..job }).unwrap();
+        assert!(plain.blurred.is_none());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
