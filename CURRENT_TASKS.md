@@ -7,7 +7,7 @@ Last updated: 2026-10-26 (shell blur installed for a live test; Codex performanc
 - `main`: accepted work, including the Random/settings fix, the GNOME 51 port and the glycin conversion (merged 2026-10-26), pushed to `origin`.
 - `fix/random-and-settings`, `fix/gnome-51`, `feature/glycin-prepare`: merged into `main` (fast-forward) and pushed.
 - `feature/shell-blur`: resumed 2026-10-26 for GNOME 51, `main` merged in, all planned steps implemented and verified headless; see below. Pushed; installed 2026-10-26 for a live test. Not merged.
-- `feature/fast-switch`: P-01 from the Codex performance audit, branched from `feature/shell-blur`; see below. Installed and accepted 2026-10-26; not merged, not pushed. Backup of the build it replaced: `~/.local/share/wallslaed-backups/installed-shell-blur-ebfca40/`.
+- `feature/fast-switch`: P-01 from the Codex performance audit, branched from `feature/shell-blur`; see below. P-01 installed and accepted 2026-10-26; P-02 change (`ddc9958`) installed 2026-10-26 for testing. Pushed to `origin/feature/fast-switch` (includes the `feature/shell-blur` commits); not merged. Backups: `installed-fast-switch-603caca/` (before P-02), `installed-shell-blur-ebfca40/` (before preloading), both in `~/.local/share/wallslaed-backups/`.
 - `codex/perf-audit`: the Codex performance audit report (`bdb984d`, `AUDIT.md`), branched from `7f533a9`; keep until P-01..P-06 are decided.
 - `codex/audit-shell-blur`: deleted 2026-10-26 (all 14 findings fixed). Next: a Codex performance audit on `codex/perf-audit`; prompt in `.scratch/codex-perf-audit-prompt.md`.
 - Installed in the live session: `feature/shell-blur` (`9be4b8b`), installed 2026-10-26; extension takes effect after logging out and back in. Hide Top Bar was still enabled in the user's session at install time (conflicts with `topbar-autohide`), and the user's `blur-popups`, `blur-app-folders`, `blur-screenshot` were off.
@@ -32,7 +32,7 @@ Headless, 4K scale 2 (`.scratch/fast-switch/`, run 5 mode `p02`, run 6 full suit
 
 GNOME bug report: not filed (needs the user's GNOME GitLab login; Claude in Chrome wasn't connected). Draft in `.scratch/fast-switch/gnome-issue.md`.
 
-Not tested: the real desktop; an image too large for one texture (sliced path).
+Installed 2026-10-26 for the user to test (log out and in to load it). Not tested: the real desktop; an image too large for one texture (sliced path).
 
 ## Accepted: wallpaper switch without the freeze (`feature/fast-switch`, 2026-10-26)
 
