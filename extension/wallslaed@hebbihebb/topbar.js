@@ -5,7 +5,9 @@
 //
 // The bar slides out with translation_y and stays visible as far as Clutter
 // is concerned: GNOME already shows and hides it for fullscreen windows, and
-// the two would fight. Its input region moves off screen with it.
+// the two would fight. Its input region moves off screen with it. Only a
+// reveal over a fullscreen window takes visibility over from GNOME, for as
+// long as the reveal lasts.
 
 import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
@@ -44,6 +46,7 @@ export class TopBar {
         this._pollId = 0;
         this._hidden = false;
         this._revealed = false; // shown by the pointer over a window
+        this._overFullscreen = false; // that reveal is over a fullscreen window
         this._unredirectDisabled = false;
         this._barrier = null;
         this._pressure = null;
@@ -62,10 +65,12 @@ export class TopBar {
             });
 
         this._settingsId = settings.connect('changed', (_s, key) => {
-            if (key === 'topbar-autohide')
+            if (key === 'topbar-autohide') {
                 this._sync();
-            else if (key === 'topbar-reveal-at-edge')
+            } else if (key === 'topbar-reveal-at-edge') {
                 this._updateBarrier();
+                this._endReveal();
+            }
         });
         this._sync();
     }
@@ -83,12 +88,13 @@ export class TopBar {
         this._enabled = true;
         const panelBox = Main.layoutManager.panelBox;
 
-        this._setStruts(false);
+        this._track({affectsStruts: false});
 
         const on = (obj, signal, fn) => this._signals.push([obj, obj.connect(signal, fn)]);
         const check = () => this._queueCheck();
         on(global.display, 'restacked', check);
         on(global.display, 'notify::focus-window', () => this._watchFocus());
+        on(Shell.WindowTracker.get_default(), 'notify::focus-app', () => this._watchFocus());
         on(global.display, 'in-fullscreen-changed', check);
         on(global.display, 'workareas-changed', check);
         on(global.window_manager, 'size-changed', check);
@@ -106,7 +112,7 @@ export class TopBar {
         });
         on(Main.layoutManager, 'monitors-changed', () => {
             this._updateBarrier();
-            check();
+            this._endReveal();
         });
         on(Main.layoutManager, 'hot-corners-changed', () => this._updateBarrier());
 
@@ -139,28 +145,38 @@ export class TopBar {
         panelBox.translation_y = 0;
         this._hidden = false;
         this._revealed = false;
+        this._overFullscreen = false;
         this._setUnredirectDisabled(false);
         this._clearOffsets();
         // Giving the strut back while locked would shrink the work area and
         // push windows down; the shell tracks it again on unlock.
-        this._setStruts(Main.sessionMode.currentMode !== 'unlock-dialog');
+        this._track({affectsStruts: Main.sessionMode.currentMode !== 'unlock-dialog'});
     }
 
-    _setStruts(affectsStruts) {
+    // How GNOME tracks the bar: struts, and whether it hides the bar over
+    // fullscreen windows (which also applies the visibility right away).
+    _track({affectsStruts, trackFullscreen = true}) {
         const panelBox = Main.layoutManager.panelBox;
         Main.layoutManager.untrackChrome(panelBox);
-        Main.layoutManager.trackChrome(panelBox, {affectsStruts, trackFullscreen: true});
+        Main.layoutManager.trackChrome(panelBox, {affectsStruts, trackFullscreen});
     }
 
-    // Moving the focused window can put it under the bar without any of the
-    // display-wide signals firing.
+    // Moving any window of the focused app can put it under the bar without
+    // any of the display-wide signals firing.
     _watchFocus() {
         this._unwatchFocus();
-        const window = global.display.focus_window;
-        if (window) {
-            for (const signal of ['position-changed', 'size-changed'])
-                this._focusSignals.push([window, window.connect(signal, () => this._queueCheck())]);
+        const on = (obj, signal) =>
+            this._focusSignals.push([obj, obj.connect(signal, () => this._queueCheck())]);
+        const app = Shell.WindowTracker.get_default().focus_app;
+        const windows = new Set(app?.get_windows() ?? []);
+        if (global.display.focus_window)
+            windows.add(global.display.focus_window);
+        for (const window of windows) {
+            on(window, 'position-changed');
+            on(window, 'size-changed');
         }
+        if (app)
+            this._focusSignals.push([app, app.connect('windows-changed', () => this._watchFocus())]);
         this._queueCheck();
     }
 
@@ -205,6 +221,8 @@ export class TopBar {
             this._revealed = false;
             this._show();
         }
+        if (!this._revealed)
+            this._releaseFullscreen();
     }
 
     // Whether a window of the focused app (or the focused window, if it has
@@ -260,6 +278,15 @@ export class TopBar {
         this._setUnredirectDisabled(false);
         if (!this._hidden)
             this._slide(true);
+        this._releaseFullscreen();
+    }
+
+    // Back to GNOME hiding the bar over a fullscreen window.
+    _releaseFullscreen() {
+        if (!this._overFullscreen)
+            return;
+        this._overFullscreen = false;
+        this._track({affectsStruts: false});
     }
 
     _setUnredirectDisabled(disabled) {
@@ -312,18 +339,35 @@ export class TopBar {
         if (!this._hidden)
             return;
         this._revealed = true;
+        // GNOME hides the bar over a fullscreen window; take that over.
+        const monitor = Main.layoutManager.primaryMonitor;
+        if (monitor?.inFullscreen && !this._overFullscreen) {
+            this._overFullscreen = true;
+            this._track({affectsStruts: false, trackFullscreen: false});
+            Main.layoutManager.panelBox.show();
+        }
         this._show();
         this._startPolling();
+    }
+
+    _endReveal() {
+        if (!this._revealed)
+            return;
+        this._stopPolling();
+        this._revealed = false;
+        this._check();
     }
 
     // Hide again once the pointer has left the bar and no menu is open.
     _startPolling() {
         this._stopPolling();
         this._pollId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, POINTER_POLL_MS, () => {
-            const panelBox = Main.layoutManager.panelBox;
-            const [, y] = global.get_pointer();
             const monitor = Main.layoutManager.primaryMonitor;
-            const over = monitor && y < monitor.y + panelBox.height;
+            const height = Main.layoutManager.panelBox.height;
+            const [x, y] = global.get_pointer();
+            const over = monitor &&
+                x >= monitor.x && x < monitor.x + monitor.width &&
+                y >= monitor.y && y < monitor.y + height;
             if (over || Main.panel.menuManager.activeMenu)
                 return GLib.SOURCE_CONTINUE;
             this._pollId = 0;
