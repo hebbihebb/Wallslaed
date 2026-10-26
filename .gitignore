@@ -1,3 +1,9 @@
 target/
 .worktrees/
 .scratch/
+
+# Local working notes: personal and machine-specific, never published
+CURRENT_TASKS.md
+AGENTS.local.md
+*.local.md
+.claude/settings.local.json

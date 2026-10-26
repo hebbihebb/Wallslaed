@@ -61,5 +61,5 @@ Not completely from outside GJS: any GNOME code that frees a JS-wrapped `GSettin
 - Build workaround 1. It's the only change that takes Wallslæd out of the trigger for its own wallpaper changes.
 - Keep stress tests at 1.5 s or slower, and make them stop on a hang, as `.scratch/blur51/churn.sh` does.
 - Help it land: comment on !1134 with the headless reproduction (GNOME Shell alone, no extensions, `baseline/test.sh` hangs within 100 changes). A minimal reproduction is often what gets a fix merged.
-- Last resort for this machine only: rebuild Fedora's `gjs` package with the !1134 patch. It replaces a system library, so that's the user's call, never an agent's.
+- Last resort, for one machine only: rebuild Fedora's `gjs` package with the !1134 patch. It replaces a system library, so that's the user's call, never an agent's.
 - If it happens anyway: Ctrl+Alt+F3, log in, `pkill -KILL -x gnome-shell`, Ctrl+Alt+F2 (ends the session like a logout). Before killing, `eu-stack -p $(pgrep -x gnome-shell)` > a file confirms it's this bug (look for `ToggleQueue::lock` and `g_settings_backend_watch_weak_notify`).

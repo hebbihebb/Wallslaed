@@ -4,10 +4,11 @@ The authoritative instructions for every coding agent working on this repository
 
 ## Read First
 
-1. `CURRENT_TASKS.md`: what is in progress, its state, and what comes next.
-2. `ROADMAP.md`: ideas and research not yet started. Nothing there is approved work; ask before starting an item.
-3. `docs/how-it-works.md`: how the daemon, extension and player fit together, and why they are separate. `README.md` is the user guide.
-4. `git status`: if there is uncommitted work you did not create, find out what it is before touching anything.
+1. `CURRENT_TASKS.md`: what is in progress, its state, and what comes next. It is a local working file, not tracked by Git, so it may be missing in a fresh clone.
+2. `AGENTS.local.md`, if present: facts about this machine (folders, mounts, hardware, shell quirks). Also local and untracked.
+3. `ROADMAP.md`: ideas and research not yet started. Nothing there is approved work; ask before starting an item.
+4. `docs/how-it-works.md`: how the daemon, extension and player fit together, and why they are separate. `README.md` is the user guide.
+5. `git status`: if there is uncommitted work you did not create, find out what it is before touching anything.
 
 ## The Golden Rule: the Live Desktop Is Off-Limits
 
@@ -26,10 +27,10 @@ Reading is fine: `wallslaed status`, `gsettings get`, `journalctl`, `systemctl -
 Irreplaceable; never modify, move or delete, and never point a test at it:
 
 - `~/.local/state/wallslaed/state.json`: favorites, bans, history and shuffle position. `media.json` next to it: the active music video and saved positions.
-- The wallpaper folder (currently `~/Pictures/Wallpapers`, 1500+ files) and the music video folder (`~/Videos/Music`). The daemon only ever reads source files; generated files go to `~/.cache/wallslaed`.
+- The configured wallpaper folder and the music video folder (paths in `AGENTS.local.md`). The daemon only ever reads source files; generated files go to `~/.cache/wallslaed`.
 - The user's GNOME settings (dconf).
 
-`~/Network/Gigabyte/*` are **hard NFS mounts**: if the network drops, anything that touches them hangs forever (this froze Nautilus once). Never scan, `stat`, `ls` or `find` them, and never use them as test folders. If you must, wrap the command in `timeout -s KILL 5`.
+Network mounts (listed in `AGENTS.local.md`) may be **hard NFS mounts**: if the network drops, anything that touches them hangs forever. Never scan, `stat`, `ls` or `find` them, and never use them as test folders. If you must, wrap the command in `timeout -s KILL 5`.
 
 ## Testing Without Touching the Desktop
 
@@ -74,27 +75,25 @@ Hand back evidence, not homework: what passed, what failed, what was **not** tes
 ## Git
 
 - `main` holds accepted work only. Work happens on `feature/<name>` or `fix/<name>` branches (Codex: `codex/<name>`).
-- **Worktrees go inside the repo**, under `.worktrees/<branch-name>` (git-ignored), never in `/tmp`. Testing often needs a logout, and on this machine that currently means a reboot, which clears `/tmp`. Evidence that must outlive the session (audit probes, scripts, logs) goes in `.scratch/<name>/`, also git-ignored. Remove a worktree with `git worktree remove` once its branch is merged or abandoned.
+- **Worktrees go inside the repo**, under `.worktrees/<branch-name>` (git-ignored), never in `/tmp`, which a reboot clears. Evidence that must outlive the session (audit probes, scripts, logs) goes in `.scratch/<name>/`, also git-ignored. Remove a worktree with `git worktree remove` once its branch is merged or abandoned.
 - Commit each testable unit on its branch; never end a session with large uncommitted work without recording its state in `CURRENT_TASKS.md`.
-- Never push, force-push, delete branches or rewrite published history without explicit approval. The remote is `github.com/hebbihebb/Wallslaed` (private).
+- Never push, force-push, delete branches or rewrite published history without explicit approval. The remote is `github.com/hebbihebb/Wallslaed`, which is **public**: tracked files must not contain personal or machine-specific details (home paths, hardware, mounts, the user's folders, settings or habits). Those go in `CURRENT_TASKS.md` or `AGENTS.local.md`, which are git-ignored.
 - The user prefers plain-language explanations of Git decisions.
 
 ## Audits
 
 Only when the user asks, on its own branch:
 
-1. **Audit:** write `AUDIT.md` (ID, severity, `file:line`, scenario, confirmed or suspected, proposed fix). Change no code.
+1. **Audit:** write `AUDIT.md` (ID, severity, `file:line`, scenario, confirmed or suspected, proposed fix). Change no code. Write paths relative to the repo or `~`, never the absolute home path.
 2. **Review:** go through the findings with the user; they accept, reject or defer each one.
 3. **Fix:** only the accepted findings, then delete `AUDIT.md` so it never reaches `main`.
 
-## Shell on This Machine
+## Shell
 
-- `cp`, `mv` and `rm` are interactive aliases and hang waiting for a prompt. Write `command cp -f`, `command mv -f`, `command rm -f` (or `\cp`).
 - Never `pgrep -f` or `pkill -f` a pattern that appears in your own command line; it matches your own shell. Use `pgrep -x <name>`, or bracket a letter: `pgrep -f '[w]allslaed-player'`.
 - Wayland socket paths are limited to 108 bytes, so nested sessions need a short `XDG_RUNTIME_DIR` (`tools/isolated-session.sh` handles it).
-- Terminals opened from Nautilus live inside Nautilus's systemd unit; killing that unit kills those terminals (and any agent running in them).
-- `yt-dlp` lives in `~/.local/bin` and needs `--js-runtimes node` for YouTube (no deno installed); `daemon/src/media.rs` adds it.
 - End optional probes (`ls`, `which`) with `|| true`.
+- Machine-specific shell quirks (aliases, tool locations) are in `AGENTS.local.md`.
 
 ## Lessons Learned
 

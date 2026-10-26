@@ -61,7 +61,7 @@ GNOME Shell (GJS 1.90 and earlier) can freeze for good around wallpaper changes;
 
 ## Measured
 
-These numbers come from a headless GNOME Shell 50 test session on this machine, with a 1920×1080 virtual monitor:
+These numbers come from a headless GNOME Shell 50 test session with a 1920×1080 virtual monitor:
 
 | | |
 |---|---|
@@ -73,10 +73,10 @@ These numbers come from a headless GNOME Shell 50 test session on this machine, 
 | Player, static wallpaper | not running |
 | GNOME Shell, 200 wallpaper changes, 50 menus, 30 disable/enable cycles | no blur: +2.6 MB; Wallslæd blur: +2.8 MB; Blur my Shell: +26 MB (and 15 MB more to start with) |
 
-## Notes for this laptop
+## Hybrid-GPU laptops
 
-- `LIBVA_DRIVER_NAME=nvidia` is set in `/etc/environment` and in `~/.config/environment.d/va-api.conf`. That forces every VA-API app onto the NVIDIA driver, even on the AMD GPU. The player works around this for itself.
-- Here the built-in panel and HDMI port are wired to the NVIDIA GPU, so GNOME composites on it. The player detects that and decodes with NVDEC on the same GPU. On an AMD/Intel-primary setup it uses VA-API on that GPU.
+- A system-wide `LIBVA_DRIVER_NAME=nvidia` (in `/etc/environment` or `~/.config/environment.d/`) forces every VA-API app onto the NVIDIA driver, even on the integrated GPU. The player works around this for itself.
+- When the display is wired to the NVIDIA GPU, GNOME composites on it; the player detects that and decodes with NVDEC on the same GPU. On an AMD/Intel-primary setup it uses VA-API on that GPU.
 
 ## Install script
 
