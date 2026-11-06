@@ -92,6 +92,11 @@ export class TopBar {
 
         const on = (obj, signal, fn) => this._signals.push([obj, obj.connect(signal, fn)]);
         const check = () => this._queueCheck();
+        // GNOME destroys the bar at shutdown, before extensions are told.
+        on(panelBox, 'destroy', () => {
+            this._panelGone = true;
+            this._disable();
+        });
         on(global.display, 'restacked', check);
         on(global.display, 'notify::focus-window', () => this._watchFocus());
         on(Shell.WindowTracker.get_default(), 'notify::focus-app', () => this._watchFocus());
@@ -140,13 +145,15 @@ export class TopBar {
             global.compositor.get_laters().remove(this._laterId);
         this._laterId = 0;
 
-        const panelBox = Main.layoutManager.panelBox;
-        panelBox.remove_transition('translation-y');
-        panelBox.translation_y = 0;
         this._hidden = false;
         this._revealed = false;
         this._overFullscreen = false;
         this._setUnredirectDisabled(false);
+        if (this._panelGone)
+            return;
+        const panelBox = Main.layoutManager.panelBox;
+        panelBox.remove_transition('translation-y');
+        panelBox.translation_y = 0;
         this._clearOffsets();
         // Giving the strut back while locked would shrink the work area and
         // push windows down; the shell tracks it again on unlock.

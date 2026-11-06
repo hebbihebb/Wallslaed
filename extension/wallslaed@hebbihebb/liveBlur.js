@@ -325,8 +325,12 @@ class Blur {
         // Watch everything between the popup and the target: any of them can
         // move, scale or fade it.
         for (let a = target; a; a = a.get_parent()) {
-            for (const prop of TRACKED)
-                this._signals.push([a, a.connect(`notify::${prop}`, () => this._queueUpdate())]);
+            for (const prop of TRACKED) {
+                this._signals.push([a, a.connect(`notify::${prop}`, () => {
+                    this._follow();
+                    this._queueUpdate();
+                })]);
+            }
             if (a === root)
                 break;
         }
@@ -337,11 +341,35 @@ class Blur {
             return Clutter.EVENT_PROPAGATE;
         })]);
         this._signals.push([root, root.connect('destroy', () => this.destroy())]);
+        // GNOME destroys everything at shutdown, its own actors first.
+        this._signals.push([this._group, this._group.connect('destroy', () => {
+            this._groupGone = true;
+            this.destroy();
+        })]);
         this._signals.push([target, target.connect('destroy', () => {
             this._target = null;
             this.destroy();
         })]);
         this._update();
+    }
+
+    // Move the blur with its popup at once. A popup often moves in the layout
+    // pass itself (a menu follows its button while the top bar slides in),
+    // after this frame's _update() has run, so the blur trailed it by a frame
+    // all through the slide. A translation needs no new layout: it shows in
+    // the frame being drawn. Sizes catch up in _update(), which resets it.
+    _follow() {
+        if (this._destroyed || this._groupGone || !this._target || !this._group.mapped)
+            return;
+        const [px, py] = this._group.get_parent().get_transformed_position();
+        const extents = this._target.get_transformed_extents();
+        const x = Math.round(extents.get_x() - px), y = Math.round(extents.get_y() - py);
+        if (!Number.isFinite(x) || !Number.isFinite(y))
+            return;
+        const dx = x - this._part.x, dy = y - this._part.y;
+        this._group.set_translation(dx, dy, 0);
+        // The baked picture stays put on screen while the group moves.
+        this._bakedPicture.set_translation(-dx, -dy, 0);
     }
 
     // Once per frame at most, and never in the middle of a relayout.
@@ -470,6 +498,8 @@ class Blur {
         this._group.show();
         this._part.set_position(Math.round(x1), Math.round(y1));
         this._part.set_size(Math.round(w), Math.round(h));
+        this._group.set_translation(0, 0, 0);
+        this._bakedPicture.set_translation(0, 0, 0);
         this._placeBaked();
     }
 
@@ -487,7 +517,8 @@ class Blur {
             this._target.style = this._style;
             this._target.remove_style_class_name(SURFACE_CLASS);
         }
-        this._group.destroy();
+        if (!this._groupGone)
+            this._group.destroy();
         this._onDestroyed();
     }
 }
