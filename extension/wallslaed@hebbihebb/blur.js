@@ -8,20 +8,17 @@
 // once per monitor: the surfaces show clones of that one blurred actor.
 
 import Clutter from 'gi://Clutter';
-import Cogl from 'gi://Cogl';
 import GDesktopEnums from 'gi://GDesktopEnums';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
-import Glycin from 'gi://Gly';
 import Meta from 'gi://Meta';
 import Shell from 'gi://Shell';
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
-const FADE_MS = 300;
+import {loadBackground} from './compat.js';
 
-Gio._promisify(Glycin.Loader.prototype, 'load_async');
-Gio._promisify(Glycin.Image.prototype, 'next_frame_async');
+const FADE_MS = 300;
 
 // What the extension adds to GNOME's own styles, scoped by these classes.
 const OVERVIEW_CLASS = 'wallslaed-blur-overview';
@@ -120,9 +117,9 @@ export class BlurLayers {
     // Wait for the image before swapping, so nothing flashes black.
     async _loadBaked(source) {
         const cancellable = this._cancellable = new Gio.Cancellable();
-        let loaded;
+        let make;
         try {
-            loaded = await loadTexture(source.file, cancellable);
+            make = await loadBackground(source.file, cancellable);
         } catch (e) {
             if (!e.matches?.(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED))
                 console.warn(`Wallslæd: can't load ${source.file.get_path()}: ${e.message}`);
@@ -132,11 +129,7 @@ export class BlurLayers {
             return;
         this._cancellable = null;
         const style = this._style();
-        this._apply(() => {
-            const background = new Meta.Background({meta_display: global.display});
-            background.set_texture(loaded.texture, style, loaded.colorState);
-            return background;
-        });
+        this._apply(() => make(style));
     }
 
     // GNOME's own background object for the picture on screen, once loaded.
@@ -380,23 +373,4 @@ class Layer {
             c.destroy();
         }
     }
-}
-
-// Loads an image into a texture the way GNOME 51's background cache does,
-// but without blocking: through glycin's sandboxed loaders.
-async function loadTexture(file, cancellable) {
-    const stream = await file.read_async(GLib.PRIORITY_DEFAULT, cancellable);
-    const loader = Glycin.Loader.new_for_stream(stream);
-    loader.set_accepted_memory_formats(Glycin.MemoryFormatSelection.R8G8B8);
-    const image = await loader.load_async(cancellable);
-    const frame = await image.next_frame_async(cancellable);
-    if (frame.get_memory_format() !== Glycin.MemoryFormat.R8G8B8)
-        throw new Error(`unexpected memory format ${frame.get_memory_format()}`);
-
-    const context = global.stage.context.get_backend().get_cogl_context();
-    const texture = Cogl.Texture2D.new_with_size(context, frame.get_width(), frame.get_height());
-    texture.set_components(Cogl.TextureComponents.RGB);
-    if (!texture.set_data(Cogl.PixelFormat.RGB_888, frame.get_stride(), frame.get_buf_bytes().get_data(), 0))
-        throw new Error('failed to set texture data');
-    return {texture, colorState: null};
 }

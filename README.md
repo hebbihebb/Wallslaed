@@ -12,14 +12,14 @@ It also does a few more things you might otherwise need several extensions for:
 - **Blur:** a frosted-glass look behind the overview, top bar, menus, notifications and lock screen.
 - **Auto-hiding top bar:** the top bar slides away when a window needs the space.
 
-Wallslæd is made for **GNOME 51 on Wayland** (Fedora 45).
+Wallslæd is made for **GNOME 50 and 51 on Wayland**, and tested on Fedora 45 (GNOME 51) and Ubuntu 26.04 (GNOME 50).
 
 ## Getting started
 
 ### What you need
 
-- GNOME 51, on Wayland (the default on most distributions)
-- Rust, to build it (`cargo`), and on Fedora `libseccomp-devel` and `fontconfig-devel` for its image decoding; `glycin-loaders` and `bubblewrap` come with GNOME
+- GNOME 50 or 51, on Wayland (the default on most distributions)
+- Rust, to build it (`cargo`), and the headers for its image decoding and the player: on Fedora `libseccomp-devel` and `fontconfig-devel`, on Ubuntu `libgtk-4-dev`, `libseccomp-dev` and `libfontconfig-dev`; `glycin-loaders` and `bubblewrap` come with GNOME
 - GStreamer with its GTK 4 video sink (on Fedora: `gstreamer1-plugin-gtk4`) and the usual codec plugins, for animated wallpapers
 - `ffmpeg`, for GIFs and video wallpapers
 - `yt-dlp`, only if you want music videos
@@ -111,7 +111,7 @@ On the **Appearance** page in the settings:
 
 - **Blur** gives the overview, the top bar, the dash, menus, quick settings, notifications, dialogs, app folders, the screenshot tool and the lock screen a blurred, frosted look. Set how strong and how dark it is, and switch any of those parts off.
 - **Hide Over Windows** makes the top bar slide away while a window touches it, so maximized windows get the whole screen. It comes back in the overview, and when you push the mouse against the top edge of the screen (also over a fullscreen window).
-- **App Windows** sets how strongly GNOME blurs behind apps that ask for it, such as GTK 4 apps with see-through backgrounds and some terminals. It's a GNOME 51 feature; off leaves GNOME's own strength.
+- **App Windows** sets how strongly GNOME blurs behind apps that ask for it, such as GTK 4 apps with see-through backgrounds and some terminals. It's a GNOME 51 feature, so the group isn't shown on GNOME 50; off leaves GNOME's own strength.
 
 The blur is built to be light. Instead of blurring your wallpaper over and over, Wallslæd makes one small blurred copy when the wallpaper changes and reuses it everywhere. Menus only blur what's behind them while they're open.
 

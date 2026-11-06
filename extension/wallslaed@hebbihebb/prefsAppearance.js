@@ -6,6 +6,10 @@ import Gio from 'gi://Gio';
 import Gtk from 'gi://Gtk';
 
 import {gettext as _} from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
+import * as Config from 'resource:///org/gnome/Shell/Extensions/js/misc/config.js';
+
+// GNOME 51 added the blur behind app windows (and the radius we set).
+const APP_BLUR = parseInt(Config.PACKAGE_VERSION) >= 51;
 
 function switches(group, settings, rows) {
     for (const [key, title, subtitle] of rows) {
@@ -55,7 +59,8 @@ export function appearancePage(window, settings) {
         title: _('App Windows'),
         description: _('Some apps ask GNOME to blur what is behind their windows, such as GTK 4 apps with see-through backgrounds and some terminals.'),
     });
-    page.add(apps);
+    if (APP_BLUR)
+        page.add(apps);
     switches(apps, settings, [
         ['blur-apps', _('Set Their Blur'), _('Off leaves GNOME\'s own blur')],
     ]);

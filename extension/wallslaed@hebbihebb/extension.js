@@ -3,6 +3,7 @@ import {Extension, InjectionManager} from 'resource:///org/gnome/shell/extension
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
 import {AnimatedHost} from './animated.js';
+import {APP_BLUR, TEXTURE_BACKGROUNDS} from './compat.js';
 import {AppBlur} from './appBlur.js';
 import {BlurLayers} from './blur.js';
 import {DaemonClient} from './daemon.js';
@@ -54,25 +55,28 @@ export default class WallslaedExtension extends Extension {
         this._menu = new DesktopMenu(this._daemon, this._animated, this._injections,
             () => this.openPreferences());
         this._transitions = new Transitions(this._settings, this._injections);
-        this._preloader = new Preloader(this._daemon, this._injections,
-            () => this._transitions.busy);
+        // GNOME 51 decodes a new wallpaper on its main thread; the preloader
+        // hands it a finished texture. GNOME 50 decodes in a thread itself.
+        this._preloader = TEXTURE_BACKGROUNDS
+            ? new Preloader(this._daemon, this._injections, () => this._transitions.busy)
+            : null;
         this._blur = new BlurLayers(this._settings, this._daemon);
         this._liveBlur = new LiveBlur(this._settings, this._injections, this._blur);
         this._topBar = new TopBar(this._settings, this._injections);
-        this._appBlur = new AppBlur(this._settings);
+        this._appBlur = APP_BLUR ? new AppBlur(this._settings) : null;
     }
 
     _disableDesktop() {
         if (!this._daemon)
             return;
         this._injections.clear();
-        this._appBlur.destroy();
+        this._appBlur?.destroy();
         this._blur.destroy();
         this._liveBlur.destroy();
         this._topBar.destroy();
         this._menu.destroy();
         this._animated.destroy();
-        this._preloader.destroy();
+        this._preloader?.destroy();
         this._transitions.destroy();
         this._daemon.destroy();
         this._injections = null;

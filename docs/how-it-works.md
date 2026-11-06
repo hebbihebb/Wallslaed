@@ -83,6 +83,15 @@ These numbers come from a headless GNOME Shell 50 test session with a 1920×1080
 
 `install.sh` builds the binaries and puts them in `~/.local/bin`, installs the extension (`*.js`, `*.css`, `metadata.json`) and the GSettings schema, enables and restarts the `wallslaed.service` systemd user unit, and warns if another wallpaper changer is enabled.
 
+## GNOME 50 and 51
+
+The extension runs on both. `compat.js` detects what differs, by feature rather than version number, and the rest of the extension asks it:
+
+- **Backgrounds:** GNOME 51 gives a `Meta.Background` a texture (`set_texture`); GNOME 50 loads files through its own `Meta.BackgroundImageCache` (`set_file`). `loadBackground()` hides the difference for the baked blur.
+- **Shaders:** GNOME 51 removed `Shell.GLSLEffect`; transitions use a `Clutter.ShaderEffect` with a static Cogl snippet there, and `Shell.GLSLEffect` on GNOME 50. The shader code is the same.
+- **Preloading** runs on GNOME 51 only: GNOME 50 decodes a new wallpaper in a thread itself, so there is no main-thread freeze to avoid.
+- **App window blur** and the **reduced motion** setting are GNOME 51 features; on GNOME 50 they're skipped, and Preferences hides the App Windows group.
+
 ## Layout
 
 ```

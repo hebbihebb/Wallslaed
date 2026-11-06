@@ -16,6 +16,8 @@ import St from 'gi://St';
 import * as Background from 'resource:///org/gnome/shell/ui/background.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
+import {GLSL_EFFECT, reducedMotion} from './compat.js';
+
 // The `random` pool: every effect. A stored 'dissolve', 'slide' or 'iris'
 // (removed) falls through to the crossfade.
 const EFFECTS = ['fade', 'zoom', 'pixelate', 'wipe', 'blur', 'tilt', 'burn',
@@ -275,32 +277,64 @@ const SHADERS = {
         cogl_color_out = c;`,
 };
 
-// Clutter.ShaderEffect caches the snippet per GType, so each shader needs its
-// own class. The code runs after the default texture lookup (`set_post`), on
-// `cogl_color_out`. Uniforms a shader doesn't use are skipped by Cogl.
-const ShaderEffects = Object.fromEntries(Object.entries(SHADERS).map(([name, shader]) => [name,
-    GObject.registerClass({GTypeName: `WallslaedTransition_${name}`},
-        class extends Clutter.ShaderEffect {
-            vfunc_get_static_snippet() {
-                const snippet = Cogl.Snippet.new(Cogl.SnippetHook.FRAGMENT,
-                    DECLARATIONS + (shader.declarations ?? ''), null);
-                snippet.set_post(shader.code ?? shader);
-                return snippet;
-            }
+// The shader code runs after the default texture lookup, on `cogl_color_out`.
+// Both effect classes cache their shader per GType, so each shader needs its
+// own class. GNOME 51 has Clutter.ShaderEffect take a static Cogl snippet
+// (`set_post`); GNOME 50 still has Shell.GLSLEffect, which 51 removed.
+const snippetMethods = shader => ({
+    vfunc_get_static_snippet() {
+        const snippet = Cogl.Snippet.new(Cogl.SnippetHook.FRAGMENT,
+            DECLARATIONS + (shader.declarations ?? ''), null);
+        snippet.set_post(shader.code ?? shader);
+        return snippet;
+    },
 
-            setup(width, height) {
-                // Pixelate divides by the size; never let it be zero.
-                this.set_uniform_float('size', 2, [Math.max(1, width), Math.max(1, height)]);
-                this.set_uniform_float('seed', 1, [Math.random()]);
-                this.setProgress(0);
-            }
+    // Uniforms a shader doesn't use are skipped by Cogl. Queues a repaint.
+    _uniform(name, n, values) {
+        this.set_uniform_float(name, n, values);
+    },
+});
 
-            setProgress(p) {
-                // Queues a repaint itself.
-                this.set_uniform_float('progress', 1, [p]);
-            }
-        }),
-]));
+const glslMethods = shader => ({
+    vfunc_build_pipeline() {
+        this.add_glsl_snippet(Cogl.SnippetHook.FRAGMENT,
+            DECLARATIONS + (shader.declarations ?? ''), shader.code ?? shader, false);
+    },
+
+    // Uniforms a shader doesn't use are compiled out (location -1).
+    _uniform(name, n, values) {
+        this._locations ??= new Map();
+        if (!this._locations.has(name))
+            this._locations.set(name, this.get_uniform_location(name));
+        const location = this._locations.get(name);
+        if (location >= 0)
+            this.set_uniform_float(location, n, values);
+        this.queue_repaint();
+    },
+});
+
+// GObject.registerClass only finds vfuncs on the class's own prototype, so
+// the version's methods go there before registering.
+function shaderEffect(name, shader) {
+    const Effect = class extends (GLSL_EFFECT ? Shell.GLSLEffect : Clutter.ShaderEffect) {
+        setup(width, height) {
+            // Pixelate divides by the size; never let it be zero.
+            this._uniform('size', 2, [Math.max(1, width), Math.max(1, height)]);
+            this._uniform('seed', 1, [Math.random()]);
+            this.setProgress(0);
+        }
+
+        setProgress(p) {
+            this._uniform('progress', 1, [p]);
+        }
+    };
+    Object.defineProperties(Effect.prototype,
+        Object.getOwnPropertyDescriptors((GLSL_EFFECT ? glslMethods : snippetMethods)(shader)));
+    return GObject.registerClass({GTypeName: `WallslaedTransition_${name}`}, Effect);
+}
+
+const ShaderEffects = Object.fromEntries(Object.entries(SHADERS).map(([name, shader]) =>
+    [name, shaderEffect(name, shader)]));
 
 export class Transitions {
     constructor(settings, injections) {
@@ -355,7 +389,7 @@ export class Transitions {
             this._nextRandom = null;
         }
         // Reduced motion keeps a transition, just not a moving one.
-        if (name !== 'none' && St.Settings.get().reduced_motion === St.ReducedMotion.REDUCE)
+        if (name !== 'none' && reducedMotion())
             name = 'fade';
         this._picked = {background, name};
         return name;
