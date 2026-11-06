@@ -26,10 +26,11 @@ const PANEL_CLASS = 'wallslaed-blur-panel';
 const DASH_CLASS = 'wallslaed-blur-dash';
 
 export class BlurLayers {
-    constructor(settings, daemon) {
+    // `background`: GNOME's org.gnome.desktop.background settings, shared.
+    constructor(settings, daemon, background) {
         this._settings = settings;
         this._daemon = daemon;
-        this._background = new Gio.Settings({schema_id: 'org.gnome.desktop.background'});
+        this._background = background;
         this._source = null; // {file, gpu}
         this._cancellable = null; // a baked copy being loaded
         this._gnomeBackground = null; // GNOME's background the GPU blur shows

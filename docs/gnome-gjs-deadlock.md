@@ -43,6 +43,8 @@ Rechecked 2026-11-06, GNOME alone, two writes, 0.35 s apart, 200 changes (`basel
 | 1.90.1 with !1134 backported, loaded into the test shell only | 0 of 8 runs hung |
 | 1.88.0 (Ubuntu 26.04, GNOME 50.1, other hardware) | 0 of 8 runs hung; doesn't isolate GJS (other machine, distro and GNOME, whose `ui/background.js` may churn settings differently) |
 
+At 1.5 s it still happens, only less often. A full-stack run on GNOME 51.1 / GJS 1.90.1 (Wallslæd's daemon and extension, a change every 1.5 s, the desktop menu opened every 10 changes, the screen locked and unlocked every 50) hung at change 275 with the dconf worker at 99% and the exact stack above; two other 300-change runs that day didn't. At the default 15-minute interval the window is far smaller, since GNOME's garbage collector has long run between two writes, but not closed: any program writing a dconf key can still meet a collection.
+
 Separately, a slower run on GNOME 50.1 / GJS 1.88 without Wallslæd's extension (the daemon changing the wallpaper every 1.5 s, the desktop menu opened every 10 changes, the screen locked and unlocked every 50) stopped answering D-Bus at change 216 (for at least 15 s, when the test ended it), in 1 of 2 runs; no stack was taken. Unconfirmed as this bug, but a reason not to treat GNOME 50 as safe, or the 1.5 s limit for stress tests as more than a margin.
 
 The backport is a 3-way merge with a trivial `#include` conflict in `toggle.cpp`, and `gjs_error()` replaced by `g_error()` (the former only exists in master); it builds as C++17 and passes all 30 toggle-queue unit tests, the MR's new ones included. Patch and logs: `.scratch/gjs-1134/`.
@@ -72,7 +74,7 @@ Not completely from outside GJS: any GNOME code that frees a JS-wrapped `GSettin
 ## If it never gets fixed
 
 - Build workaround 1. It's the only change that takes Wallslæd out of the trigger for its own wallpaper changes.
-- Keep stress tests at 1.5 s or slower, and make them stop on a hang, as `.scratch/blur51/churn.sh` does.
+- Keep stress tests at 1.5 s or slower, which narrows the risk but doesn't remove it, and make them stop on a hang and save a stack (`sudo eu-stack` where ptrace is limited to descendants, as on Ubuntu), as `.scratch/blur51/churn.sh` and `.scratch/full-stack/drive.py` do.
 - Help it land: comment on !1134 with the headless reproduction (GNOME Shell alone, no extensions, `baseline/test.sh` hangs within 100 changes). A minimal reproduction is often what gets a fix merged.
 - Last resort, for one machine only: rebuild Fedora's `gjs` package with the !1134 backport (`.scratch/gjs-1134/`; the raw MR doesn't apply to 1.90.1). Use `Release: 1.wallslaed1%{?dist}` rather than `%autorelease`: it sorts above the official `-1` and below any official `-2` or 1.90.2, so a Fedora update replaces it; don't versionlock it. It replaces a system library, so that's the user's call, never an agent's.
 - If it happens anyway: Ctrl+Alt+F3, log in, `pkill -KILL -x gnome-shell`, Ctrl+Alt+F2 (ends the session like a logout). Before killing, `eu-stack -p $(pgrep -x gnome-shell)` > a file confirms it's this bug (look for `ToggleQueue::lock` and `g_settings_backend_watch_weak_notify`).

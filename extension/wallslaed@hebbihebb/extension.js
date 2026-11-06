@@ -1,3 +1,5 @@
+import Gio from 'gi://Gio';
+
 import {Extension, InjectionManager} from 'resource:///org/gnome/shell/extensions/extension.js';
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
@@ -23,6 +25,10 @@ import {Transitions} from './transitions.js';
 export default class WallslaedExtension extends Extension {
     enable() {
         this._settings = this.getSettings();
+        // One for the extension's lifetime, not one per unlock: a GSettings
+        // freed by the garbage collector while dconf delivers a change is
+        // what deadlocks GJS (docs/gnome-gjs-deadlock.md).
+        this._backgroundSettings = new Gio.Settings({schema_id: 'org.gnome.desktop.background'});
         this._lockInjections = new InjectionManager();
         this._lockBlur = new LockBlur(this._settings, this._lockInjections);
         this._sessionId = Main.sessionMode.connect('updated', () => this._syncSession());
@@ -36,6 +42,7 @@ export default class WallslaedExtension extends Extension {
         this._lockBlur.destroy();
         this._lockInjections = null;
         this._lockBlur = null;
+        this._backgroundSettings = null;
         this._settings = null;
     }
 
@@ -60,7 +67,7 @@ export default class WallslaedExtension extends Extension {
         this._preloader = TEXTURE_BACKGROUNDS
             ? new Preloader(this._daemon, this._injections, () => this._transitions.busy)
             : null;
-        this._blur = new BlurLayers(this._settings, this._daemon);
+        this._blur = new BlurLayers(this._settings, this._daemon, this._backgroundSettings);
         this._liveBlur = new LiveBlur(this._settings, this._injections, this._blur);
         this._topBar = new TopBar(this._settings, this._injections);
         this._appBlur = APP_BLUR ? new AppBlur(this._settings) : null;
