@@ -44,17 +44,33 @@ export async function loadBackground(file, cancellable) {
     };
 }
 
+/** Loads `file` into the existing Meta.Background `background`, in `style`. */
+export async function loadInto(background, file, style, cancellable) {
+    if (TEXTURE_BACKGROUNDS) {
+        const {texture, colorState} = await loadTexture(file, cancellable);
+        background.set_texture(texture, style, colorState);
+    } else {
+        await cached(file, cancellable);
+        background.set_file(file, style);
+    }
+}
+
 // GNOME 50: its background image cache decodes in a thread; once the image is
 // in the cache, set_file shows it at once.
-function loadThroughCache(file, cancellable) {
-    const image = Meta.BackgroundImageCache.get_default().load(file);
-    const make = style => {
+async function loadThroughCache(file, cancellable) {
+    await cached(file, cancellable);
+    return style => {
         const background = new Meta.Background({meta_display: global.display});
         background.set_file(file, style);
         return background;
     };
+}
+
+// GNOME 50: `file` in Meta.BackgroundImageCache, decoded.
+function cached(file, cancellable) {
+    const image = Meta.BackgroundImageCache.get_default().load(file);
     if (image.is_loaded())
-        return Promise.resolve(make);
+        return image.get_success() ? Promise.resolve() : Promise.reject(new Error('GNOME could not load it'));
     return new Promise((resolve, reject) => {
         let settled = false;
         let cancelId = 0;
@@ -67,7 +83,7 @@ function loadThroughCache(file, cancellable) {
             if (cancelId)
                 cancellable.disconnect(cancelId);
             if (image.get_success())
-                resolve(make);
+                resolve();
             else
                 reject(new Error('GNOME could not load it'));
         });

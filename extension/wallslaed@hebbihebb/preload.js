@@ -105,6 +105,11 @@ export class Preloader {
             });
     }
 
+    /** The prepared texture for `file` ({texture, colorState}), or null. */
+    take(file) {
+        return this._take(file);
+    }
+
     // The finished texture for `file`, or null to let GNOME load it.
     async _take(file) {
         const uri = file.get_uri();

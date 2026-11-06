@@ -57,6 +57,20 @@ Not completely from outside GJS: any GNOME code that frees a JS-wrapped `GSettin
 
 **Done (`e08eacf`):** the daemon writes both picture keys in one transaction, so a change sends one signal instead of two. The second signal used to arrive just as GNOME dropped the old `Background`.
 
+**Done (`fix/gnome-50`), lean backgrounds:** a different take on step 1 below, without its costs. The garbage doesn't come from the settings write but from GNOME's `Background` class, which makes a `Gio.Settings` and a `WallClock` in its constructor (`ui/background.js`, 51.1: lines 412 and 414). The extension overrides `BackgroundSource.getBackground` and, for an ordinary picture on the desktop, returns a lean `Meta.Background` subclass (`leanBackground.js`) with the signals and fields GNOME's code uses, listening to the settings the `BackgroundSource` already holds for the session. GNOME keeps doing everything else: it decides when to swap, builds the actors, and the daemon keeps writing `picture-uri`, so GNOME Settings and the login screen stay current. Slideshow XML files, no picture, and GNOME's `SHELL_BACKGROUND_IMAGE` override still get GNOME's own `Background`. Lean backgrounds survive screen locks (the lock screen uses the same `BackgroundSource`); disabling the extension hands GNOME back its own.
+
+Measured 2026-11-06, headless, Wallslæd's daemon and extension, a change every 0.35 s, no transition, Fedora's background-logo extension off (Fedora enables it by default; see below), `.scratch/full-stack/stress.py`:
+
+| | `GSettings` + `WallClock` made per change | Runs hung (200 changes each) |
+| --- | --- | --- |
+| GNOME's `Background` (GNOME 51.1, GJS 1.90.1) | 1 + 1 | 1 of 6 (4 of 6 with the logo extension on) |
+| Lean backgrounds (GNOME 51.1, GJS 1.90.1) | 0 | 0 of 8 |
+| Lean backgrounds (GNOME 50.1, GJS 1.88.0) | 0 | 0 of 8 |
+
+Counts are every `Gio.Settings` and `GnomeDesktop.WallClock` constructed from JavaScript over 30 changes, by creating stack (`.scratch/full-stack/probe@test`, `settings-count.py`); the only other ones, the same with and without, are made once at startup by the app grid and the touchpad gestures. This removes Wallslæd's own changes as a trigger; it doesn't fix GJS: any other code that frees a `GSettings` while any program writes a dconf key can still hit it.
+
+**Other extensions add to it.** Fedora's background-logo extension (enabled by default on Fedora Workstation) makes a `Gio.Settings` for `org.gnome.desktop.interface` for every background actor (`extension.js:182` in 51~alpha-2): 90 in 30 changes in the test above, and with it on, lean backgrounds still hung in 2 of 8 runs. A report is drafted in `.scratch/stress/background-logo-issue.md`; the fix there is one shared `Gio.Settings`.
+
 **Possible next steps, biggest effect first:**
 
 1. **Stop changing GNOME's background settings on every wallpaper change.** The extension already hooks GNOME's background code for transitions. It could give the new picture to the existing background directly (`Meta.Background.set_texture()`, which GNOME 51 uses itself), so GNOME never creates a new `Background`, `Gio.Settings` or `WallClock`, and no dconf write happens. The daemon would write `picture-uri` only now and then (say every few minutes, and when the extension is disabled or the session ends) so GNOME Settings, the login screen and other apps still see a recent wallpaper. This removes both triggers for Wallslæd's own changes. Costs: real work in `transitions.js`/`blur.js` and the daemon, GNOME Settings shows a slightly old wallpaper, and anything else reading `picture-uri` lags.

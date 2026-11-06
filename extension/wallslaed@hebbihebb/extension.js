@@ -9,6 +9,7 @@ import {APP_BLUR, TEXTURE_BACKGROUNDS} from './compat.js';
 import {AppBlur} from './appBlur.js';
 import {BlurLayers} from './blur.js';
 import {DaemonClient} from './daemon.js';
+import {LeanBackgrounds} from './leanBackground.js';
 import {LiveBlur} from './liveBlur.js';
 import {LockBlur} from './lockBlur.js';
 import {TopBar} from './topbar.js';
@@ -31,6 +32,8 @@ export default class WallslaedExtension extends Extension {
         this._backgroundSettings = new Gio.Settings({schema_id: 'org.gnome.desktop.background'});
         this._lockInjections = new InjectionManager();
         this._lockBlur = new LockBlur(this._settings, this._lockInjections);
+        // Kept through screen locks: the lock screen shows the same background.
+        this._leanBackgrounds = new LeanBackgrounds(this._lockInjections, () => this._preloader ?? null);
         this._sessionId = Main.sessionMode.connect('updated', () => this._syncSession());
         this._syncSession();
     }
@@ -39,6 +42,8 @@ export default class WallslaedExtension extends Extension {
         Main.sessionMode.disconnect(this._sessionId);
         this._disableDesktop();
         this._lockInjections.clear();
+        this._leanBackgrounds.destroy();
+        this._leanBackgrounds = null;
         this._lockBlur.destroy();
         this._lockInjections = null;
         this._lockBlur = null;

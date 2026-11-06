@@ -59,7 +59,7 @@ Wallpapers are shuffled into a "bag":
 
 ## GNOME's wallpaper-change deadlock
 
-GNOME Shell (GJS 1.90 and earlier) can freeze for good around wallpaper changes; the daemon writes both picture keys in one transaction to make it rarer. Cause, measurements, workarounds and what to do whether or not upstream fixes it: [gnome-gjs-deadlock.md](gnome-gjs-deadlock.md).
+GNOME Shell (GJS 1.90 and earlier) can freeze for good around wallpaper changes: GJS deadlocks when its garbage collector frees a `GSettings` while dconf delivers a change. GNOME's own `Background` creates a `GSettings` and a `WallClock` on every change. So the extension gives GNOME a lean background for ordinary pictures (`leanBackground.js`): a `Meta.Background` with the signals and fields GNOME's code uses, which creates no settings objects. GNOME still decides when to swap and builds the actors, so transitions, the overview, the lock screen and the blur work as before. The daemon also writes both picture keys in one transaction. Cause, measurements, workarounds and what to do whether or not upstream fixes it: [gnome-gjs-deadlock.md](gnome-gjs-deadlock.md).
 
 ## Measured
 
