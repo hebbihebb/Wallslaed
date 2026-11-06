@@ -34,7 +34,7 @@ fi
 
 echo
 if gnome-extensions enable "$UUID" 2>/dev/null; then
-    echo "Done. Right-click the desktop to use Wallslæd."
+    echo "Done. Right-click the desktop, or open the Wallslæd tile in Quick Settings (top right), to use Wallslæd."
 else
     echo "Done. GNOME Shell only sees new extensions after you log out and back in."
     echo "Then run: gnome-extensions enable $UUID"
