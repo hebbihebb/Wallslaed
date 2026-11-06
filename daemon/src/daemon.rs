@@ -149,6 +149,7 @@ struct Running {
 type Shared = Rc<RefCell<Daemon>>;
 
 pub fn run() -> Result<(), String> {
+    tune_allocator();
     if gio::SettingsSchemaSource::default()
         .and_then(|s| s.lookup(SCHEMA, true))
         .is_none()
@@ -248,6 +249,21 @@ fn quit_on_signals(main_loop: &glib::MainLoop) {
         while unsafe { libc::read(fds[0], (&mut b as *mut u8).cast(), 1) } != 1 {}
         ml.quit();
     });
+}
+
+/// glibc's allocator keeps memory a thread freed for that thread to reuse, in
+/// one pool ("arena") per thread, and after the first big free it raises the
+/// size from which it asks the system directly. A decoded 4K picture (25 MB)
+/// then lands in a pool and stays when freed: under the extension's calls, the
+/// daemon grew in steps to 180 MB in 300 wallpaper changes, and to ~485 MB
+/// after a day of real use. Big buffers now always come from the system and
+/// go back when freed, and two pools are plenty for a daemon that decodes one
+/// picture at a time. `malloc_trim` after each job stays for the small rest.
+fn tune_allocator() {
+    unsafe {
+        libc::mallopt(libc::M_ARENA_MAX, 2);
+        libc::mallopt(libc::M_MMAP_THRESHOLD, 1 << 20);
+    }
 }
 
 /// The bus is ours to talk on, but the name may still go to another daemon:

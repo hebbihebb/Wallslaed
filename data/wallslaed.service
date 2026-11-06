@@ -12,10 +12,13 @@ RestartSec=5
 # Keep it light and out of the way of the desktop.
 Nice=10
 IOSchedulingClass=idle
-# Converting a 5.5K JPEG XL peaks around 320M with its glycin loader, which
-# runs in this unit too; it drops back to tens of MB right after.
-MemoryHigh=400M
-MemoryMax=600M
+# Idle, the daemon holds tens of MB. Preparing a huge picture takes far more
+# for a moment, with its glycin loader (which runs in this unit too): about
+# 320M for a 64-megapixel JPEG XL, 400M for a 54-megapixel lossless WebP
+# (its decoder holds two full-size copies). MemoryHigh sits above that, so
+# such a picture isn't slowed down by reclaim; MemoryMax stops a runaway.
+MemoryHigh=640M
+MemoryMax=1G
 
 [Install]
 WantedBy=graphical-session.target

@@ -11,10 +11,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime};
 
-use fast_image_resize::{FilterType, ResizeAlg, ResizeOptions, Resizer};
+use fast_image_resize::images::{Image, ImageRef};
+use fast_image_resize::{FilterType, PixelType, ResizeAlg, ResizeOptions, Resizer};
 use image::codecs::jpeg::JpegEncoder;
 use image::codecs::png::PngEncoder;
-use image::{DynamicImage, ImageDecoder, ImageEncoder, ImageReader};
+use image::metadata::Orientation;
+use image::{DynamicImage, ImageDecoder, ImageEncoder, ImageReader, RgbImage};
 
 use crate::library::{self, Kind};
 
@@ -173,20 +175,26 @@ fn prepare_static(job: &Job, key: &str) -> Result<(Prepared, Option<DynamicImage
     let (sw, sh) = (job.screen.0.max(1) as f64, job.screen.1.max(1) as f64);
     // Smallest size that still covers the screen ("zoom" in GNOME terms).
     let cover = |w: u32, h: u32| (sw / w as f64).max(sh / h as f64);
-    let img = match reader(src).and_then(|r| r.into_dimensions().map_err(|e| e.to_string())) {
+    // The size that covers the screen, for a picture of (w, h) as shown.
+    let fit = |w: u32, h: u32| {
+        let s = cover(w, h).min(1.0);
+        (((w as f64 * s).round() as u32).max(1), ((h as f64 * s).round() as u32).max(1))
+    };
+    let dst = match reader(src).and_then(|r| r.into_dimensions().map_err(|e| e.to_string())) {
         Ok((w, h)) => {
             if cover(w, h) * SCALE_SLACK >= 1.0 {
                 return Ok((done(src.to_path_buf()), None));
             }
             let mut decoder = reader(src)?.into_decoder().map_err(|e| e.to_string())?;
             let orientation = decoder.orientation().map_err(|e| e.to_string())?;
-            let mut img = DynamicImage::from_decoder(decoder).map_err(|e| e.to_string())?;
-            img.apply_orientation(orientation);
-            DynamicImage::ImageRgb8(img.into_rgb8())
+            let img = DynamicImage::from_decoder(decoder).map_err(|e| e.to_string())?;
+            let (ow, oh) = oriented(img.width(), img.height(), orientation);
+            let (tw, th) = fit(ow, oh);
+            shrink(&img, orientation, tw, th, FilterType::Lanczos3)?
         }
         // JXL, AVIF, HEIC...: GNOME would decode these itself, which costs
         // GNOME Shell far more than a JPEG, so they become one at any size.
-        Err(_) => match decode_glycin(src) {
+        Err(_) => match decode_glycin(src, fit) {
             Ok(img) => img,
             Err(e) => {
                 eprintln!("wallslaed: can't decode {}: {e}", src.display());
@@ -194,23 +202,7 @@ fn prepare_static(job: &Job, key: &str) -> Result<(Prepared, Option<DynamicImage
             }
         },
     };
-
-    let s = cover(img.width(), img.height()).min(1.0);
-    let tw = ((img.width() as f64 * s).round() as u32).max(1);
-    let th = ((img.height() as f64 * s).round() as u32).max(1);
-    let dst = if (tw, th) == (img.width(), img.height()) {
-        img
-    } else {
-        let mut dst = DynamicImage::new_rgb8(tw, th);
-        Resizer::new()
-            .resize(
-                &img,
-                &mut dst,
-                &ResizeOptions::new().resize_alg(ResizeAlg::Convolution(FilterType::Lanczos3)),
-            )
-            .map_err(|e| e.to_string())?;
-        dst
-    };
+    let dst = DynamicImage::ImageRgb8(dst);
 
     write_file(&out, "jpg", |w| JpegEncoder::new_with_quality(w, 92).encode_image(&dst))?;
     Ok((done(out), Some(dst)))
@@ -312,17 +304,27 @@ fn bake_blur(picture: &Path, key: &str, cache_dir: &Path, blur: Blur) -> Option<
     }
     let mut decoder = reader(picture).ok()?.into_decoder().ok()?;
     let orientation = decoder.orientation().ok()?;
-    let mut img = DynamicImage::from_decoder(decoder).ok()?;
-    img.apply_orientation(orientation);
-    bake_blur_image(&DynamicImage::ImageRgb8(img.into_rgb8()), key, cache_dir, blur)
+    let img = DynamicImage::from_decoder(decoder).ok()?;
+    bake_blur_oriented(&img, orientation, key, cache_dir, blur)
 }
 
 fn blur_path(key: &str, cache_dir: &Path, blur: Blur) -> PathBuf {
     cache_dir.join(format!("{key}-blur-{}-{}.png", blur.strength, blur.brightness))
 }
 
-/// [`bake_blur`] from pixels already decoded (and oriented).
+/// [`bake_blur`] from pixels already decoded and oriented.
 fn bake_blur_image(img: &DynamicImage, key: &str, cache_dir: &Path, blur: Blur) -> Option<PathBuf> {
+    bake_blur_oriented(img, Orientation::NoTransforms, key, cache_dir, blur)
+}
+
+/// [`bake_blur`] from decoded pixels still to be turned by `orientation`.
+fn bake_blur_oriented(
+    img: &DynamicImage,
+    orientation: Orientation,
+    key: &str,
+    cache_dir: &Path,
+    blur: Blur,
+) -> Option<PathBuf> {
     let out = blur_path(key, cache_dir, blur);
     if reusable(&out) {
         touch(&out);
@@ -336,18 +338,10 @@ fn bake_blur_image(img: &DynamicImage, key: &str, cache_dir: &Path, blur: Blur) 
     // copy stays small, so memory doesn't depend on the strength.
     let bound = (img.width() as f64 * img.height() as f64 / BLUR_MAX_PIXELS).sqrt();
     let factor = (blur.strength as f64 / 4.0).clamp(1.0, 8.0).max(bound);
-    let tw = ((img.width() as f64 / factor).round() as u32).max(1);
-    let th = ((img.height() as f64 / factor).round() as u32).max(1);
-    let mut small = DynamicImage::new_rgb8(tw, th);
-    Resizer::new()
-        .resize(
-            img,
-            &mut small,
-            &ResizeOptions::new().resize_alg(ResizeAlg::Convolution(FilterType::Bilinear)),
-        )
-        .ok()?;
-
-    let mut small = small.into_rgb8();
+    let (ow, oh) = oriented(img.width(), img.height(), orientation);
+    let tw = ((ow as f64 / factor).round() as u32).max(1);
+    let th = ((oh as f64 / factor).round() as u32).max(1);
+    let mut small = shrink(img, orientation, tw, th, FilterType::Bilinear).ok()?;
     if blur.strength > 0 {
         small = image::imageops::fast_blur(&small, (blur.strength as f64 / factor) as f32);
     }
@@ -460,8 +454,10 @@ fn transcode_gif_later(src: PathBuf, out: PathBuf, max_width: u32) {
 }
 
 /// Decodes with glycin, the sandboxed loaders GNOME itself uses, into RGB with
-/// the orientation and colour profile applied.
-fn decode_glycin(src: &Path) -> Result<DynamicImage, String> {
+/// the orientation and colour profile applied, at the size `fit` gives for its
+/// (oriented) size. Resized straight from glycin's frame: a 64-megapixel
+/// picture is 192 MB decoded, and copying it first would hold it twice.
+fn decode_glycin(src: &Path, fit: impl Fn(u32, u32) -> (u32, u32)) -> Result<RgbImage, String> {
     let mut loader = glycin::Loader::new(gio::File::for_path(src));
     loader
         .accepted_memory_formats(glycin::MemoryFormatSelection::R8g8b8)
@@ -477,13 +473,69 @@ fn decode_glycin(src: &Path) -> Result<DynamicImage, String> {
     let (w, h, stride) = (frame.width(), frame.height(), frame.stride() as usize);
     let row = w as usize * 3;
     let buf = frame.buf_slice();
+    let (tw, th) = fit(w, h);
+    if stride == row {
+        let pixels = buf.get(..row * h as usize).ok_or("short frame")?;
+        if (tw, th) == (w, h) {
+            return RgbImage::from_raw(w, h, pixels.to_vec()).ok_or_else(|| "bad frame size".to_owned());
+        }
+        let src = ImageRef::new(w, h, pixels, PixelType::U8x3).map_err(|e| e.to_string())?;
+        return resize_rgb(&src, tw, th, FilterType::Lanczos3);
+    }
+    // Padded rows: pack them first.
     let mut rgb = Vec::with_capacity(row * h as usize);
     for y in 0..h as usize {
         rgb.extend_from_slice(buf.get(y * stride..y * stride + row).ok_or("short frame")?);
     }
-    image::RgbImage::from_raw(w, h, rgb)
-        .map(DynamicImage::ImageRgb8)
-        .ok_or_else(|| "bad frame size".to_owned())
+    drop(frame);
+    let img = RgbImage::from_raw(w, h, rgb).ok_or("bad frame size")?;
+    if (tw, th) == (w, h) {
+        return Ok(img);
+    }
+    shrink(&DynamicImage::ImageRgb8(img), Orientation::NoTransforms, tw, th, FilterType::Lanczos3)
+}
+
+/// Whether `orientation` turns the picture on its side.
+fn swaps_sides(orientation: Orientation) -> bool {
+    matches!(
+        orientation,
+        Orientation::Rotate90 | Orientation::Rotate270 | Orientation::Rotate90FlipH | Orientation::Rotate270FlipH
+    )
+}
+
+/// The size of a `w` x `h` picture once turned by `orientation`.
+fn oriented(w: u32, h: u32, orientation: Orientation) -> (u32, u32) {
+    if swaps_sides(orientation) { (h, w) } else { (w, h) }
+}
+
+/// `img` turned by `orientation` and scaled to `tw` x `th`, as RGB. Scales
+/// first, in the decoder's own pixel format, then turns and converts the small
+/// copy: converting or rotating the full-size picture would hold a second copy
+/// of it. Alpha is dropped, as converting to RGB first would (`use_alpha` off:
+/// straight colours, not premultiplied).
+fn shrink(img: &DynamicImage, orientation: Orientation, tw: u32, th: u32, filter: FilterType) -> Result<RgbImage, String> {
+    // The size before turning.
+    let (sw, sh) = oriented(tw, th, orientation);
+    let mut small = if (sw, sh) == (img.width(), img.height()) {
+        img.clone()
+    } else {
+        let mut small = DynamicImage::new(sw, sh, img.color());
+        Resizer::new()
+            .resize(img, &mut small, &ResizeOptions::new().resize_alg(ResizeAlg::Convolution(filter)).use_alpha(false))
+            .map_err(|e| e.to_string())?;
+        small
+    };
+    small.apply_orientation(orientation);
+    Ok(small.into_rgb8())
+}
+
+/// Scale RGB pixels to `tw` x `th`.
+fn resize_rgb(src: &ImageRef, tw: u32, th: u32, filter: FilterType) -> Result<RgbImage, String> {
+    let mut dst = Image::new(tw, th, PixelType::U8x3);
+    Resizer::new()
+        .resize(src, &mut dst, &ResizeOptions::new().resize_alg(ResizeAlg::Convolution(filter)))
+        .map_err(|e| e.to_string())?;
+    RgbImage::from_raw(tw, th, dst.into_vec()).ok_or_else(|| "bad size".to_owned())
 }
 
 fn reader(src: &Path) -> Result<ImageReader<std::io::BufReader<File>>, String> {
@@ -871,6 +923,87 @@ mod tests {
         trim_cache(&cache, &[], u64::MAX);
         assert!(!old.exists());
         assert!(fresh.exists(), "a transcode may still be writing it");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A picture with a different colour in every place, to catch a wrong turn.
+    fn gradient(w: u32, h: u32) -> image::RgbaImage {
+        image::RgbaImage::from_fn(w, h, |x, y| {
+            image::Rgba([(x * 255 / w) as u8, (y * 255 / h) as u8, ((x + y) % 256) as u8, (x % 7 * 30) as u8])
+        })
+    }
+
+    /// Largest and mean difference per channel.
+    fn difference(a: &RgbImage, b: &RgbImage) -> (u8, f64) {
+        assert_eq!(a.dimensions(), b.dimensions());
+        let d: Vec<u8> = a.as_raw().iter().zip(b.as_raw()).map(|(x, y)| x.abs_diff(*y)).collect();
+        (d.iter().copied().max().unwrap_or(0), d.iter().map(|&x| x as f64).sum::<f64>() / d.len() as f64)
+    }
+
+    // shrink() scales before turning and converting; the result must match
+    // turning and converting first, as the daemon used to.
+    #[test]
+    fn shrink_matches_turning_first() {
+        let src = DynamicImage::ImageRgba8(gradient(640, 360));
+        for orientation in [
+            Orientation::NoTransforms,
+            Orientation::Rotate90,
+            Orientation::Rotate180,
+            Orientation::Rotate270,
+            Orientation::FlipHorizontal,
+            Orientation::FlipVertical,
+            Orientation::Rotate90FlipH,
+            Orientation::Rotate270FlipH,
+        ] {
+            let mut turned = src.clone();
+            turned.apply_orientation(orientation);
+            let turned = DynamicImage::ImageRgb8(turned.into_rgb8());
+            let (tw, th) = (turned.width() / 4, turned.height() / 4);
+            let mut old = DynamicImage::new_rgb8(tw, th);
+            Resizer::new()
+                .resize(&turned, &mut old, &ResizeOptions::new().resize_alg(ResizeAlg::Convolution(FilterType::Lanczos3)))
+                .unwrap();
+            let new = shrink(&src, orientation, tw, th, FilterType::Lanczos3).unwrap();
+            // Turned on its side, the resizer's two passes run in the other
+            // order, each rounding to 8 bits: a few steps at most, rarely.
+            let (max, mean) = difference(&old.into_rgb8(), &new);
+            assert!(max <= 4 && mean < 0.5, "{orientation:?}: off by {max}, {mean:.3} on average");
+        }
+    }
+
+    // A turned picture is scaled to cover the screen as it will be shown.
+    #[test]
+    fn turned_pictures_cover_the_screen() {
+        let dir = std::env::temp_dir().join(format!("wallslaed-turn-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("tall.jpg");
+        // 4000x2000 stored, shown 2000x4000 (EXIF orientation 6, Rotate90).
+        let mut jpeg = Vec::new();
+        JpegEncoder::new_with_quality(&mut jpeg, 90)
+            .encode_image(&DynamicImage::ImageRgb8(DynamicImage::ImageRgba8(gradient(4000, 2000)).into_rgb8()))
+            .unwrap();
+        // APP1 Exif segment with Orientation = 6, after the SOI marker.
+        let exif: &[u8] = &[
+            0xFF, 0xE1, 0x00, 0x22, b'E', b'x', b'i', b'f', 0, 0, b'M', b'M', 0, 0x2A, 0, 0, 0, 8, 0, 1, 0x01,
+            0x12, 0, 3, 0, 0, 0, 1, 0, 6, 0, 0, 0, 0, 0, 0,
+        ];
+        let mut file = jpeg[..2].to_vec();
+        file.extend_from_slice(exif);
+        file.extend_from_slice(&jpeg[2..]);
+        std::fs::write(&src, file).unwrap();
+        let job = Job {
+            source: src.to_string_lossy().into_owned(),
+            cache_dir: dir.join("cache"),
+            screen: (1000, 800),
+            prescale: true,
+            blur: None,
+            keep: Vec::new(),
+            cache_bytes: u64::MAX,
+        };
+        let p = prepare(&job).unwrap();
+        let (w, h) = image::image_dimensions(p.picture.unwrap()).unwrap();
+        // Covers 1000x800 as shown: 2000x4000 scaled by 1/2.
+        assert_eq!((w, h), (1000, 2000));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
