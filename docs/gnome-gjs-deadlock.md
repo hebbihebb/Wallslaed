@@ -21,8 +21,9 @@ On every change of `org.gnome.desktop.background picture-uri`, GNOME's `ui/backg
 
 ## Status upstream
 
-- GJS merge request [!1134](https://gitlab.gnome.org/GNOME/gjs/-/merge_requests/1134) "object: fix GC sweep deadlock with toggle notifies and late toggle notify use-after-free": open, not merged (checked 2026-10-26). It releases native objects after dropping the toggle queue lock.
-- Fedora 45 ships GJS 1.90.0 without it. GNOME 50 / Fedora 44 had the same code; the 2026-10-25 freeze while cycling wallpapers from the desktop menu fits it exactly.
+- GJS merge request [!1134](https://gitlab.gnome.org/GNOME/gjs/-/merge_requests/1134) "object: fix GC sweep deadlock with toggle notifies and late toggle notify use-after-free": open, not merged (checked 2026-11-06; its branch, two commits on master from 2026-10-17, isn't in master). It releases native objects after dropping the toggle queue lock.
+- Fedora 45 ships GJS 1.90.1 without it. 1.90.1 has other toggle and GC fixes (!1121, !1123, !1126) but still deadlocks (below). GNOME 50 / Fedora 44 had the same code; the 2026-10-25 freeze while cycling wallpapers from the desktop menu fits it exactly.
+- Ubuntu 26.04's GJS 1.88.0 (GNOME 50) did not hang in the same test (below).
 - Same bug elsewhere: Cinnamon's GJS fork, [linuxmint/cjs#140](https://github.com/linuxmint/cjs/pull/140); an extension that changes pictures, [gnome-air-raid-map#10](https://github.com/p5ych0/gnome-air-raid-map/issues/10).
 
 ## Measurements (headless GNOME Shell 51, isolated session)
@@ -33,6 +34,16 @@ On every change of `org.gnome.desktop.background picture-uri`, GNOME's `ui/backg
 | GNOME alone, both keys in one dconf transaction | 200 | 0 of 3 runs hung |
 | Wallslæd (daemon one write, extension with transitions and blur) | 200 | hung once |
 | Wallslæd, changes every 1.5 s | 60 | no hang |
+
+Rechecked 2026-11-06, GNOME alone, two writes, 0.35 s apart, 200 changes (`baseline/test.sh`):
+
+| GJS | Result |
+| --- | --- |
+| 1.90.1 (Fedora 45, GNOME 51.1) | hung in 3 of 3 runs, after at most 20, 180-200 and at most 20 changes; one stack is the exact ABBA above (main thread in `g_settings_backend_watch_weak_notify` from `g_object_remove_toggle_ref`, dconf worker in `ToggleQueue::lock()` from `g_settings_backend_dispatch_signal`) |
+| 1.90.1 with !1134 backported, loaded into the test shell only | 0 of 8 runs hung |
+| 1.88.0 (Ubuntu 26.04, GNOME 50.1) | 0 of 3 runs hung |
+
+The backport is a 3-way merge with a trivial `#include` conflict in `toggle.cpp`, and `gjs_error()` replaced by `g_error()` (the former only exists in master); it builds as C++17 and passes all 30 toggle-queue unit tests, the MR's new ones included. Patch and logs: `.scratch/gjs-1134/`.
 
 Scripts: `.scratch/blur51/baseline/test.sh` (two writes), `single.sh` (one), `.scratch/blur51/churn.sh` (Wallslæd). Run them with `tools/isolated-session.sh`; never against the real session.
 
@@ -61,5 +72,5 @@ Not completely from outside GJS: any GNOME code that frees a JS-wrapped `GSettin
 - Build workaround 1. It's the only change that takes Wallslæd out of the trigger for its own wallpaper changes.
 - Keep stress tests at 1.5 s or slower, and make them stop on a hang, as `.scratch/blur51/churn.sh` does.
 - Help it land: comment on !1134 with the headless reproduction (GNOME Shell alone, no extensions, `baseline/test.sh` hangs within 100 changes). A minimal reproduction is often what gets a fix merged.
-- Last resort, for one machine only: rebuild Fedora's `gjs` package with the !1134 patch. It replaces a system library, so that's the user's call, never an agent's.
+- Last resort, for one machine only: rebuild Fedora's `gjs` package with the !1134 backport (`.scratch/gjs-1134/`; the raw MR doesn't apply to 1.90.1). Use `Release: 1.wallslaed1%{?dist}` rather than `%autorelease`: it sorts above the official `-1` and below any official `-2` or 1.90.2, so a Fedora update replaces it; don't versionlock it. It replaces a system library, so that's the user's call, never an agent's.
 - If it happens anyway: Ctrl+Alt+F3, log in, `pkill -KILL -x gnome-shell`, Ctrl+Alt+F2 (ends the session like a logout). Before killing, `eu-stack -p $(pgrep -x gnome-shell)` > a file confirms it's this bug (look for `ToggleQueue::lock` and `g_settings_backend_watch_weak_notify`).
