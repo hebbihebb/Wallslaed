@@ -23,7 +23,7 @@ On every change of `org.gnome.desktop.background picture-uri`, GNOME's `ui/backg
 
 - GJS merge request [!1134](https://gitlab.gnome.org/GNOME/gjs/-/merge_requests/1134) "object: fix GC sweep deadlock with toggle notifies and late toggle notify use-after-free": open, not merged (checked 2026-11-06; its branch, two commits on master from 2026-10-17, isn't in master). It releases native objects after dropping the toggle queue lock.
 - Fedora 45 ships GJS 1.90.1 without it. 1.90.1 has other toggle and GC fixes (!1121, !1123, !1126) but still deadlocks (below). GNOME 50 / Fedora 44 had the same code; the 2026-10-25 freeze while cycling wallpapers from the desktop menu fits it exactly.
-- Ubuntu 26.04's GJS 1.88.0 (GNOME 50) did not hang in the same test (below).
+- Ubuntu 26.04's GJS 1.88.0 (GNOME 50.1) did not hang in the same test (below), on different hardware and a different GNOME: not enough to say 1.88 is unaffected (the 2026-10-25 freeze was on GNOME 50).
 - Same bug elsewhere: Cinnamon's GJS fork, [linuxmint/cjs#140](https://github.com/linuxmint/cjs/pull/140); an extension that changes pictures, [gnome-air-raid-map#10](https://github.com/p5ych0/gnome-air-raid-map/issues/10).
 
 ## Measurements (headless GNOME Shell 51, isolated session)
@@ -41,7 +41,7 @@ Rechecked 2026-11-06, GNOME alone, two writes, 0.35 s apart, 200 changes (`basel
 | --- | --- |
 | 1.90.1 (Fedora 45, GNOME 51.1) | hung in 3 of 3 runs, after at most 20, 180-200 and at most 20 changes; one stack is the exact ABBA above (main thread in `g_settings_backend_watch_weak_notify` from `g_object_remove_toggle_ref`, dconf worker in `ToggleQueue::lock()` from `g_settings_backend_dispatch_signal`) |
 | 1.90.1 with !1134 backported, loaded into the test shell only | 0 of 8 runs hung |
-| 1.88.0 (Ubuntu 26.04, GNOME 50.1) | 0 of 3 runs hung |
+| 1.88.0 (Ubuntu 26.04, GNOME 50.1, other hardware) | 0 of 3 runs hung; doesn't isolate GJS (other machine, distro and GNOME, whose `ui/background.js` may churn settings differently) |
 
 The backport is a 3-way merge with a trivial `#include` conflict in `toggle.cpp`, and `gjs_error()` replaced by `g_error()` (the former only exists in master); it builds as C++17 and passes all 30 toggle-queue unit tests, the MR's new ones included. Patch and logs: `.scratch/gjs-1134/`.
 
