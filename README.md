@@ -4,7 +4,7 @@ Wallslæd changes your GNOME desktop wallpaper for you. Point it at a folder of 
 
 It also does a few more things you might otherwise need several extensions for:
 
-- **Right-click menu on the desktop:** skip to the next wallpaper, go back, mark favorites, never see one again.
+- **Desktop menu and Quick Settings tile:** skip to the next wallpaper, go back, mark favorites, never see one again, pause.
 - **Transitions:** wallpapers can change with an effect, from a simple crossfade to melting, shattering or burning away.
 - **Animated wallpapers:** GIFs and videos play as your wallpaper, and pause when windows cover the desktop.
 - **Music videos:** download a music video once, then play it as your wallpaper with sound, with the usual media controls.
@@ -48,9 +48,9 @@ If you were using another wallpaper changer, turn it off: two of them will keep 
 
 ## Everyday use
 
-### The desktop menu
+### The desktop menu and the Quick Settings tile
 
-Right-click an empty spot on the desktop:
+Right-click an empty spot on the desktop, or open the system menu at the top right and click the arrow on the **Wallslæd** tile:
 
 | Item | What it does |
 |---|---|
@@ -61,6 +61,10 @@ Right-click an empty spot on the desktop:
 | Pause Rotation | Keeps the current wallpaper until you resume |
 | Music Videos | Pick a saved music video to play (see below) |
 | Wallslæd Settings | Opens Wallslæd's settings (GNOME's own *Settings* below it opens GNOME Settings) |
+
+Clicking the tile itself pauses or resumes the rotation (or the music video, while one plays); its subtitle says *Paused*, *Music Video* or *Not Running*. The tile's menu shows the current wallpaper's file name at the top.
+
+With a desktop-icons extension, such as Ubuntu's *Desktop Icons NG*, the right-click on the desktop opens that extension's own menu instead of GNOME's, so Wallslæd's items aren't there: use the tile.
 
 ### A keyboard shortcut for the next wallpaper
 
@@ -94,8 +98,8 @@ Put GIFs or videos (MP4, WebM, MKV and the like) in your wallpaper folder, and t
 A music video plays as your wallpaper with sound, and keeps playing while you work. It shows up in GNOME's media controls in the top bar and on the lock screen, and the media keys work.
 
 1. In the settings, open the **Music Videos** page and paste a video link. It downloads in the background; you can close the settings meanwhile.
-2. Play it from that page, or from the desktop menu under *Music Videos*.
-3. While it plays, the desktop menu has *Pause Music*, *Mute* and *Stop Music Video*.
+2. Play it from that page, or from the desktop menu or the tile under *Music Videos*.
+3. While it plays, the desktop menu and the tile have *Pause Music*, *Mute* and *Stop Music Video*.
 
 The wallpaper rotation waits while a music video plays. Wallslæd remembers where you left off in each video, so locking the screen or logging out picks up from there. Videos are saved in `~/Videos/Music` and never come up in the normal rotation.
 
@@ -142,7 +146,7 @@ Another wallpaper changer is running. Turn it off in the Extensions app. The ins
 Log out and back in, then make sure Wallslæd is switched on in the Extensions app.
 
 **The wallpaper doesn't change.**
-Check that rotation isn't paused (desktop menu), and that your folder has pictures in it. `wallslaed status` shows what Wallslæd sees.
+Check that rotation isn't paused (the Quick Settings tile says *Paused*), and that your folder has pictures in it. `wallslaed status` shows what Wallslæd sees.
 
 **Animated wallpapers show a still picture.**
 They pause while windows cover the screen, and on battery if that setting is on. Otherwise, check that GStreamer and its GTK 4 video sink are installed.

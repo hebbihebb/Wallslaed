@@ -7,7 +7,7 @@ Technical notes for working on Wallslæd. For using it, see the [README](../READ
 | Piece | What it does | Why it's separate |
 |---|---|---|
 | `wallslaed` daemon (Rust) | Scans the folder, picks the next wallpaper, shrinks big images to screen size, bakes the blur, sets the background, serves a D-Bus API | Heavy work stays out of `gnome-shell`. Big image decodes there cause stutter, and GJS frees memory late, which looks like a leak. |
-| GNOME Shell extension (GJS) | Desktop menu items, transition effects, hosting animated wallpapers, blur, top-bar autohide | Only code inside the Shell can touch the desktop background, its menu and the Shell's own surfaces |
+| GNOME Shell extension (GJS) | Desktop menu items and the Quick Settings tile, transition effects, hosting animated wallpapers, blur, top-bar autohide | Only code inside the Shell can touch the desktop background, its menu and the Shell's own surfaces |
 | `wallslaed-player` (Rust, GTK 4) | Plays an animated wallpaper or music video | Runs **only** while one is showing. It exits when a still one takes over, so all its memory goes back to the system. |
 
 ## Random without repeats

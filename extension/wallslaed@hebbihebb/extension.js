@@ -13,7 +13,7 @@ import {LeanBackgrounds} from './leanBackground.js';
 import {LiveBlur} from './liveBlur.js';
 import {LockBlur} from './lockBlur.js';
 import {TopBar} from './topbar.js';
-import {DesktopMenu} from './menu.js';
+import {DesktopMenu, QuickTile} from './menu.js';
 import {Preloader} from './preload.js';
 import {Transitions} from './transitions.js';
 
@@ -66,6 +66,7 @@ export default class WallslaedExtension extends Extension {
         this._animated = new AnimatedHost(this._settings, this._daemon);
         this._menu = new DesktopMenu(this._daemon, this._animated, this._injections,
             () => this.openPreferences());
+        this._tile = new QuickTile(this._daemon, this._animated, () => this.openPreferences());
         this._transitions = new Transitions(this._settings, this._injections);
         // GNOME 51 decodes a new wallpaper on its main thread; the preloader
         // hands it a finished texture. GNOME 50 decodes in a thread itself.
@@ -87,6 +88,7 @@ export default class WallslaedExtension extends Extension {
         this._liveBlur.destroy();
         this._topBar.destroy();
         this._menu.destroy();
+        this._tile.destroy();
         this._animated.destroy();
         this._preloader?.destroy();
         this._transitions.destroy();
@@ -100,6 +102,7 @@ export default class WallslaedExtension extends Extension {
         this._topBar = null;
         this._appBlur = null;
         this._menu = null;
+        this._tile = null;
         this._daemon = null;
     }
 }
