@@ -25,9 +25,18 @@
 // whole-rectangle redraws (60% less shell CPU while hovering a menu). Any
 // window, other popup, the top bar, a transition or a video wallpaper under
 // it, checked every frame, switches it back to the live blur.
+//
+// Over windows, when nothing but the wallpaper and windows is behind the
+// popup, it shows a clone of GNOME's window group blurred in ACTOR mode
+// instead: that blur is cached and redone only when what the clone shows
+// changes, not on every frame the popup itself redraws. Hovering a menu
+// with the live blur cost about 10x the paint time; the live blur, with
+// its whole-rectangle redraws, is left for what the clone doesn't hold
+// (the top bar, other popups, anything else GNOME draws above windows).
 
 import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
+import GObject from 'gi://GObject';
 import Graphene from 'gi://Graphene';
 import Meta from 'gi://Meta';
 import Mtk from 'gi://Mtk';
@@ -45,6 +54,21 @@ import * as SwitcherPopup from 'resource:///org/gnome/shell/ui/switcherPopup.js'
 
 const SURFACE_CLASS = 'wallslaed-blur-surface';
 // Properties that move or fade a popup.
+// Never picked, not even by Clutter.PickMode.ALL, nor anything inside it:
+// GNOME finds the panel button under the pointer with get_actor_at_pos(ALL)
+// to switch menus as the pointer slides along the top bar (popupMenu.js
+// _checkHoveredMenu), and a popup's blur sits above the top bar. Picked, it
+// hid the buttons, and the menus stopped switching after the first one.
+const Unpickable = GObject.registerClass(
+class WallslaedUnpickable extends Clutter.Actor {
+    vfunc_pick(_context) {
+        // Clutter picks children from here: leaving it out skips them too.
+    }
+});
+
+// LiveBlur's answer for a popup that can show the blurred window group.
+const CLONE = Symbol('clone');
+
 const TRACKED = ['allocation', 'translation-x', 'translation-y', 'scale-x', 'scale-y', 'opacity', 'visible'];
 // Which setting each kind of surface follows.
 const CATEGORY_KEYS = {popups: 'blur-popups', folders: 'blur-app-folders', screenshot: 'blur-screenshot'};
@@ -156,7 +180,7 @@ export class LiveBlur {
             this._frameIds = [
                 stage.connect('before-update', () => {
                     for (const blur of this._blurs.values())
-                        blur.syncSource(this._baked(blur));
+                        blur.syncSource(this._baked(blur) ?? (this._cloneable(blur) ? CLONE : null));
                     if (GLib.get_monotonic_time() < this._activeUntil)
                         this._redrawAll();
                 }),
@@ -207,6 +231,35 @@ export class LiveBlur {
                 return null;
         }
         return {content, index, monitor: Main.layoutManager.monitors[index]};
+    }
+
+    // Whether everything behind `blur`'s rectangle is in the window group
+    // (wallpaper, windows, video wallpapers, transitions), so a blurred clone
+    // of it can stand in for the live blur.
+    _cloneable(blur) {
+        const rect = blur.rect();
+        if (!rect || Main.overview.visible || Main.layoutManager.screenTransition.visible)
+            return false;
+        // What GNOME draws between the windows and the popup isn't in the
+        // clone: the children of uiGroup before the popup's.
+        const ui = Main.layoutManager.uiGroup;
+        const own = childOf(ui, blur.group);
+        if (own.get_parent() !== ui)
+            return false;
+        for (const child of ui.get_children()) {
+            if (child === own)
+                break;
+            if (child === global.window_group || !child.visible)
+                continue;
+            if (overlaps(rect, extentsOf(child)) && drawnParts(child).some(a => overlaps(rect, extentsOf(a))))
+                return false;
+        }
+        for (const other of this._blurs.values()) {
+            const r = other !== blur ? other.rect() : null;
+            if (r && overlaps(rect, r))
+                return false;
+        }
+        return true;
     }
 
     _activate() {
@@ -291,7 +344,7 @@ class Blur {
         const parent = root.get_parent();
         // At the parent's origin whatever its layout: fixed layouts leave it
         // at 0,0, box and bin layouts stretch it over the whole parent.
-        this._group = new Clutter.Actor({
+        this._group = new Unpickable({
             name: 'wallslaed-popup-blur',
             reactive: false,
             x_expand: true,
@@ -315,6 +368,15 @@ class Blur {
         this._bakedPicture = new Clutter.Actor();
         this._bakedClip.add_child(this._bakedPicture);
         this._group.add_child(this._bakedClip);
+        // Over windows: the window group cloned, clipped to the rectangle,
+        // blurred in ACTOR mode on the clip so the blur is only this size.
+        this._cloned = false;
+        this._cloneClip = new Clutter.Actor({clip_to_allocation: true, visible: false});
+        this._clone = new Clutter.Clone({source: global.window_group});
+        this._cloneClip.add_child(this._clone);
+        this._cloneEffect = new Shell.BlurEffect({mode: Shell.BlurMode.ACTOR, radius: look.radius, brightness: 1});
+        this._cloneClip.add_effect(this._cloneEffect);
+        this._group.add_child(this._cloneClip);
         parent.insert_child_below(this._group, root);
         target.add_style_class_name(SURFACE_CLASS);
         this._style = target.style;
@@ -368,8 +430,9 @@ class Blur {
             return;
         const dx = x - this._part.x, dy = y - this._part.y;
         this._group.set_translation(dx, dy, 0);
-        // The baked picture stays put on screen while the group moves.
+        // The baked picture and the clone stay put on screen while the group moves.
         this._bakedPicture.set_translation(-dx, -dy, 0);
+        this._clone.set_translation(-dx, -dy, 0);
     }
 
     // Once per frame at most, and never in the middle of a relayout.
@@ -389,10 +452,15 @@ class Blur {
         this._look = look;
         const {radius, brightness} = look;
         this._effect.radius = radius;
+        this._cloneEffect.radius = radius;
         const {red, green, blue, alpha} = this._tint;
         const clear = (1 - alpha / 255) * (this._baked ? 1 : brightness) / STYLESHEET_BRIGHTNESS;
         const a = Math.min(1, Math.max(0, 1 - clear)).toFixed(3);
         this._target.style = `${this._style ?? ''} background-color: rgba(${red}, ${green}, ${blue}, ${a});`;
+    }
+
+    get group() {
+        return this._group;
     }
 
     /** The blurred rectangle in stage coordinates, or null while it isn't shown. */
@@ -402,15 +470,20 @@ class Blur {
         return extentsOf(this._part);
     }
 
-    // Show `baked` ({content, index, monitor}, see LiveBlur._baked) or, if
-    // null, the live blur.
-    syncSource(baked) {
-        if (this._destroyed || baked?.content === this._baked?.content)
+    // Show `source`: the baked blur ({content, index, monitor}, see
+    // LiveBlur._baked), CLONE, or if null the live blur.
+    syncSource(source) {
+        const baked = source === CLONE ? null : source;
+        const cloned = source === CLONE;
+        if (this._destroyed || (baked?.content === this._baked?.content && cloned === this._cloned))
             return;
         const wasBaked = !!this._baked;
         this._baked = baked;
-        this._effect.enabled = !baked;
+        this._cloned = cloned;
+        this._effect.enabled = !baked && !cloned;
         this._bakedClip.visible = !!baked;
+        this._cloneClip.visible = cloned;
+        this._placeClone();
         if (baked) {
             // Its own content over the same background: the rounded clip is
             // per popup, and the overview and top bar show the shared one.
@@ -423,6 +496,20 @@ class Blur {
         this._placeBaked();
         if (wasBaked !== !!baked)
             this.setLook(this._look);
+    }
+
+    // The window group's clone, positioned so its piece under the popup shows.
+    _placeClone() {
+        if (!this._cloned)
+            return;
+        this._cloneClip.set_position(this._part.x, this._part.y);
+        this._cloneClip.set_size(this._part.width, this._part.height);
+        const [x, y] = this._part.get_transformed_position();
+        const [gx, gy] = global.window_group.get_transformed_position();
+        // Not laid out yet: the next update places it.
+        if (![x, y, gx, gy].every(Number.isFinite))
+            return;
+        this._clone.set_position(Math.round(gx - x), Math.round(gy - y));
     }
 
     // The monitor-sized picture, positioned so its piece under the popup shows.
@@ -441,14 +528,14 @@ class Blur {
     }
 
     redraw() {
-        if (!this._destroyed && !this._baked && this._part.mapped)
+        if (!this._destroyed && !this._baked && !this._cloned && this._part.mapped)
             this._part.queue_redraw();
     }
 
     // Whether `region`, the stage area a frame redraws, covers only part of
     // the blurred rectangle.
     partlyIn(region) {
-        if (this._destroyed || this._baked || !this._part.mapped)
+        if (this._destroyed || this._baked || this._cloned || !this._part.mapped)
             return false;
         // A pixel inside each edge, so rounding never makes a full redraw
         // look partial.
@@ -500,7 +587,9 @@ class Blur {
         this._part.set_size(Math.round(w), Math.round(h));
         this._group.set_translation(0, 0, 0);
         this._bakedPicture.set_translation(0, 0, 0);
+        this._clone.set_translation(0, 0, 0);
         this._placeBaked();
+        this._placeClone();
     }
 
     destroy() {

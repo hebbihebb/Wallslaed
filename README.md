@@ -76,6 +76,8 @@ In the settings, under *Transitions*, pick how one wallpaper changes into the ne
 
 Crossfade, Zoom, Pixelate, Wipe, Blur, Tilt, Burn, Freeze, Shatter, Ripple, Melt and Light Leak. Or pick *Random* for a different one each time, or *None* for an instant change.
 
+With *Reduced Motion* turned on in GNOME's Accessibility settings (GNOME 51), every effect, Random included, plays as a crossfade; the settings say so under *Effect*.
+
 The effects only run while the wallpaper is changing; they cost nothing the rest of the time.
 
 ## Animated wallpapers

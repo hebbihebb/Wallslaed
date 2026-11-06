@@ -173,6 +173,22 @@ export default class WallslaedPreferences extends ExtensionPreferences {
         settings.connect('changed::transition', syncEffect);
         transitionGroup.add(effect);
 
+        // GNOME's Reduced Motion (Accessibility) makes the shell play every
+        // effect as a crossfade (GNOME 51; 50 has no such setting). Say so,
+        // or a chosen effect, or Random, looks broken.
+        const a11ySchema = Gio.SettingsSchemaSource.get_default()?.lookup('org.gnome.desktop.a11y.interface', true);
+        if (a11ySchema?.has_key('reduced-motion')) {
+            const a11y = new Gio.Settings({settings_schema: a11ySchema});
+            const syncMotion = () => {
+                effect.subtitle = a11y.get_string('reduced-motion') === 'reduce'
+                    ? _('Reduced Motion is on in GNOME\'s Accessibility settings: every effect plays as a crossfade')
+                    : '';
+            };
+            syncMotion();
+            const id = a11y.connect('changed::reduced-motion', syncMotion);
+            effect.connect('destroy', () => a11y.disconnect(id));
+        }
+
         const duration = new Adw.SpinRow({
             title: _('Duration'),
             subtitle: _('Milliseconds'),
