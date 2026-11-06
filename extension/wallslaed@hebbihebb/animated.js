@@ -31,10 +31,11 @@ const UPowerProxy = Gio.DBusProxy.makeProxyWrapper(UPowerIface);
  * state changes. `media` is {playing, muted} while one plays, null otherwise.
  */
 export class AnimatedHost extends Signals.EventEmitter {
-    constructor(settings, daemon) {
+    constructor(settings, daemon, power) {
         super();
         this._settings = settings;
         this._daemon = daemon;
+        this._power = power;
         this._player = null;
         // Players told to quit that haven't exited yet.
         this._retiring = new Set();
@@ -52,6 +53,7 @@ export class AnimatedHost extends Signals.EventEmitter {
         const check = () => this._queueCheck();
 
         on(daemon, 'changed', () => this._sync());
+        on(power, 'changed', check);
         on(settings, 'changed', (_s, key) => {
             if (key === 'animated-enabled')
                 this._sync();
@@ -413,7 +415,9 @@ export class AnimatedHost extends Signals.EventEmitter {
             this._upower?.OnBattery === true;
         const covered = this._settings.get_boolean('animated-pause-when-covered') &&
             monitors.every(Boolean);
-        const pause = onBattery || covered;
+        // A lighter power level shows a still frame.
+        const lowPower = this._power.level('animated') !== 'full';
+        const pause = onBattery || covered || lowPower;
         if (pause !== this._paused) {
             this._paused = pause;
             this._send(this._player, pause ? 'pause' : 'play');

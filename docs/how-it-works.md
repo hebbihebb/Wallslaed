@@ -75,6 +75,28 @@ These numbers come from a headless GNOME Shell 50 test session with a 1920×1080
 | Player, static wallpaper | not running |
 | GNOME Shell, 200 wallpaper changes, 50 menus, 30 disable/enable cycles | no blur: +2.6 MB; Wallslæd blur: +2.8 MB; Blur my Shell: +26 MB (and 15 MB more to start with) |
 
+## Power modes
+
+`power.js` follows the system power mode (`ActiveProfile` of `org.freedesktop.UPower.PowerProfiles`, which both power-profiles-daemon and tuned-ppd provide) and gives each of three effects a level for the current mode: `full`, `light` or `off`, from the settings `<mode>-popups`, `<mode>-transitions` and `<mode>-animated`. The defaults are full in Performance and Balanced and light in Power Saver. A level only turns an effect down: each feature first checks its own setting, then the level. A mode change reaches open popups on the next frame, the next transition, and a playing animated wallpaper at once. `power-mode-override` (not in Preferences) makes the extension act as if the system were in a given mode; the tests use it.
+
+- **Popup blur, light:** the baked wallpaper blur, even with windows or the top bar behind (the usual rule uses it only when nothing but the wallpaper is behind). Where no baked blur fits (the overview, a transition, a video wallpaper) it falls back to the cached clone or the live blur as usual.
+- **Transitions, light:** Random draws from `LIGHT_EFFECTS` (Crossfade, Zoom, Pixelate, Ripple, Light Leak), and any other effect plays as a crossfade. Off is no transition.
+- **Animated wallpapers, light:** paused on a still frame, like the on-battery pause. Music videos are left alone.
+
+Why these three: the cost of every feature, each alone, in a headless GNOME 51 session (1920×1080, a maximized window behind ticking 10 times a second, the scripted actions below) on a hybrid-GPU laptop in each power mode:
+
+| Feature (action) | Power Saver | Balanced | Performance |
+|---|---|---|---|
+| Nothing moving, any combination of features | shell ~3% CPU, same as GNOME alone | same | same |
+| Menus opened, hovered and switched, no blur | shell 13% CPU, slowest frame paint (p99) 19 ms | 9%, 11 ms | 7%, 10 ms |
+| ... with popup blur (cached clone over the window) | 22-23% CPU, p99 20-34 ms, 2-3 frames over 33 ms | 13-15%, 9-11 ms | 13-14%, 11-28 ms |
+| Top bar, dash, overview, app folder, app window blur; hiding top bar | within the noise of the runs | same | same |
+| Light transitions (Crossfade, Zoom, Pixelate, Ripple, Light Leak), 3 changes | p99 2-6 ms, no frame over 33 ms | | |
+| Heavy transitions (Blur, Wipe, Shatter, Tilt, Freeze, Burn, Melt) | p99 up to 14.5 ms, single frames up to 98 ms (Shatter) | up to 56 ms | up to 40 ms |
+| Animated wallpaper (a GIF as video), uncovered | player 9.6% CPU, shell +2 pts, GPU +3.6 W | player 6.6% | player 4.6% |
+
+Power Saver with the light levels, same runs: menus with every blur on 23.3% -> 15.9% shell CPU, no frame over 33 ms (2 before); heavy effects play as a crossfade (Shatter's slowest frame 98 -> 12 ms); an uncovered animated wallpaper draws no frames, player 9.6% -> 0.2%. Single runs each, so take the small differences as noise; GPU watts are shared with the desktop the tests ran beside.
+
 ## Hybrid-GPU laptops
 
 - A system-wide `LIBVA_DRIVER_NAME=nvidia` (in `/etc/environment` or `~/.config/environment.d/`) forces every VA-API app onto the NVIDIA driver, even on the integrated GPU. The player works around this for itself.

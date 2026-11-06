@@ -20,6 +20,12 @@
     <value nick="leak" value="16"/>
   </enum>
 
+  <enum id="io.github.hebbihebb.Wallslaed.Level">
+    <value nick="full" value="0"/>
+    <value nick="light" value="1"/>
+    <value nick="off" value="2"/>
+  </enum>
+
   <schema id="io.github.hebbihebb.Wallslaed" path="/io/github/hebbihebb/Wallslaed/">
     <key name="folder" type="s">
       <default>''</default>
@@ -158,6 +164,51 @@
     <key name="topbar-reveal-at-edge" type="b">
       <default>true</default>
       <summary>Show the hidden top bar when the pointer pushes against the top edge</summary>
+    </key>
+    <key name="power-adapt" type="b">
+      <default>true</default>
+      <summary>Turn the costly effects down by the system power mode</summary>
+      <description>Each power mode has a level for menu and popup blur, transitions and animated wallpapers. A level only ever turns an effect down: what is switched off elsewhere stays off.</description>
+    </key>
+    <key name="power-saver-popups" enum="io.github.hebbihebb.Wallslaed.Level">
+      <default>'light'</default>
+      <summary>Menu and popup blur in the power saver mode</summary>
+    </key>
+    <key name="power-saver-transitions" enum="io.github.hebbihebb.Wallslaed.Level">
+      <default>'light'</default>
+      <summary>Transitions in the power saver mode</summary>
+    </key>
+    <key name="power-saver-animated" enum="io.github.hebbihebb.Wallslaed.Level">
+      <default>'light'</default>
+      <summary>Animated wallpapers in the power saver mode</summary>
+    </key>
+    <key name="balanced-popups" enum="io.github.hebbihebb.Wallslaed.Level">
+      <default>'full'</default>
+      <summary>Menu and popup blur in the balanced mode</summary>
+    </key>
+    <key name="balanced-transitions" enum="io.github.hebbihebb.Wallslaed.Level">
+      <default>'full'</default>
+      <summary>Transitions in the balanced mode</summary>
+    </key>
+    <key name="balanced-animated" enum="io.github.hebbihebb.Wallslaed.Level">
+      <default>'full'</default>
+      <summary>Animated wallpapers in the balanced mode</summary>
+    </key>
+    <key name="performance-popups" enum="io.github.hebbihebb.Wallslaed.Level">
+      <default>'full'</default>
+      <summary>Menu and popup blur in the performance mode</summary>
+    </key>
+    <key name="performance-transitions" enum="io.github.hebbihebb.Wallslaed.Level">
+      <default>'full'</default>
+      <summary>Transitions in the performance mode</summary>
+    </key>
+    <key name="performance-animated" enum="io.github.hebbihebb.Wallslaed.Level">
+      <default>'full'</default>
+      <summary>Animated wallpapers in the performance mode</summary>
+    </key>
+    <key name="power-mode-override" type="s">
+      <default>''</default>
+      <summary>Act as if the system were in this power mode (power-saver, balanced or performance); empty follows the system</summary>
     </key>
   </schema>
 </schemalist>

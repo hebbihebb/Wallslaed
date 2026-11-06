@@ -8,6 +8,7 @@ import {ExtensionPreferences, gettext as _} from 'resource:///org/gnome/Shell/Ex
 import {appearancePage} from './prefsAppearance.js';
 import {browsePage} from './prefsBrowse.js';
 import {musicPage} from './prefsMusic.js';
+import {powerPage} from './prefsPower.js';
 
 // A function, because gettext only works once the preferences are loading.
 const transitions = () => [
@@ -43,6 +44,7 @@ export default class WallslaedPreferences extends ExtensionPreferences {
         const page = new Adw.PreferencesPage({title: _('Wallpapers'), icon_name: 'preferences-desktop-wallpaper-symbolic'});
         window.add(page);
         window.add(appearancePage(window, settings));
+        window.add(powerPage(window, settings));
         window.add(musicPage(window, settings));
         window.add(browsePage(window, settings));
 

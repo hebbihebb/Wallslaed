@@ -14,6 +14,7 @@ import {LiveBlur} from './liveBlur.js';
 import {LockBlur} from './lockBlur.js';
 import {TopBar} from './topbar.js';
 import {DesktopMenu, QuickTile} from './menu.js';
+import {PowerMode} from './power.js';
 import {Preloader} from './preload.js';
 import {Transitions} from './transitions.js';
 
@@ -63,18 +64,19 @@ export default class WallslaedExtension extends Extension {
             return;
         this._injections = new InjectionManager();
         this._daemon = new DaemonClient();
-        this._animated = new AnimatedHost(this._settings, this._daemon);
+        this._power = new PowerMode(this._settings);
+        this._animated = new AnimatedHost(this._settings, this._daemon, this._power);
         this._menu = new DesktopMenu(this._daemon, this._animated, this._injections,
             () => this.openPreferences());
-        this._tile = new QuickTile(this._daemon, this._animated, () => this.openPreferences());
-        this._transitions = new Transitions(this._settings, this._injections);
+        this._tile = new QuickTile(this._daemon, this._animated, this._power, () => this.openPreferences());
+        this._transitions = new Transitions(this._settings, this._injections, this._power);
         // GNOME 51 decodes a new wallpaper on its main thread; the preloader
         // hands it a finished texture. GNOME 50 decodes in a thread itself.
         this._preloader = TEXTURE_BACKGROUNDS
             ? new Preloader(this._daemon, this._injections, () => this._transitions.busy)
             : null;
         this._blur = new BlurLayers(this._settings, this._daemon, this._backgroundSettings);
-        this._liveBlur = new LiveBlur(this._settings, this._injections, this._blur);
+        this._liveBlur = new LiveBlur(this._settings, this._injections, this._blur, this._power);
         this._topBar = new TopBar(this._settings, this._injections);
         this._appBlur = APP_BLUR ? new AppBlur(this._settings) : null;
     }
@@ -93,6 +95,8 @@ export default class WallslaedExtension extends Extension {
         this._preloader?.destroy();
         this._transitions.destroy();
         this._daemon.destroy();
+        this._power.destroy();
+        this._power = null;
         this._injections = null;
         this._animated = null;
         this._transitions = null;

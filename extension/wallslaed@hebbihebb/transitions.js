@@ -22,6 +22,10 @@ import {GLSL_EFFECT, reducedMotion} from './compat.js';
 // (removed) falls through to the crossfade.
 const EFFECTS = ['fade', 'zoom', 'pixelate', 'wipe', 'blur', 'tilt', 'burn',
     'freeze', 'shatter', 'ripple', 'melt', 'leak'];
+// The effects a light power level keeps: under 6 ms per frame at the 99th
+// percentile and no frame over 33 ms in power saver (docs/how-it-works.md).
+// Any other effect plays as a crossfade there, and Random draws from these.
+const LIGHT_EFFECTS = ['fade', 'zoom', 'pixelate', 'ripple', 'leak'];
 
 // Blur: the outgoing wallpaper fades through these fixed blurs. Each is
 // computed once and cached by Clutter; animating the radius itself redid the
@@ -337,8 +341,9 @@ const ShaderEffects = Object.fromEntries(Object.entries(SHADERS).map(([name, sha
     [name, shaderEffect(name, shader)]));
 
 export class Transitions {
-    constructor(settings, injections) {
+    constructor(settings, injections, power) {
         this._settings = settings;
+        this._power = power;
         // Background manager (one per monitor) -> its outgoing wallpaper.
         this._running = new Map();
         // Monitors showing the same picture share one Background; remember
@@ -350,6 +355,11 @@ export class Transitions {
         this._prewarmId = 0;
         this._prewarmActor = null;
         this._schedulePrewarm();
+        // Random's next pick was drawn for the old power level.
+        this._powerId = power?.connect('changed', () => {
+            this._nextRandom = null;
+            this._schedulePrewarm();
+        });
 
         const self = this;
         // Same as GNOME's own _swapBackgroundActor, with a choice of effect
@@ -385,13 +395,29 @@ export class Transitions {
             return this._picked.name;
         let name = this._settings.get_string('transition');
         if (name === 'random') {
-            name = this._nextRandom ?? EFFECTS[Math.floor(Math.random() * EFFECTS.length)];
+            name = this._nextRandom ?? this._randomEffect();
             this._nextRandom = null;
         }
+        name = this._allowed(name);
         // Reduced motion keeps a transition, just not a moving one.
         if (name !== 'none' && reducedMotion())
             name = 'fade';
         this._picked = {background, name};
+        return name;
+    }
+
+    _randomEffect() {
+        const pool = this._power?.level('transitions') === 'light' ? LIGHT_EFFECTS : EFFECTS;
+        return pool[Math.floor(Math.random() * pool.length)];
+    }
+
+    // What the power level allows of `name`.
+    _allowed(name) {
+        const level = this._power?.level('transitions') ?? 'full';
+        if (level === 'off')
+            return 'none';
+        if (level === 'light' && name !== 'none' && !LIGHT_EFFECTS.includes(name))
+            return 'fade';
         return name;
     }
 
@@ -500,7 +526,8 @@ export class Transitions {
     _prewarm() {
         let name = this._settings.get_string('transition');
         if (name === 'random')
-            name = this._nextRandom ??= EFFECTS[Math.floor(Math.random() * EFFECTS.length)];
+            name = this._nextRandom ??= this._randomEffect();
+        name = this._allowed(name);
         if (this._warm.has(name) || this._running.size || this._prewarmActor)
             return;
         let effects;
@@ -549,6 +576,9 @@ export class Transitions {
     }
 
     destroy() {
+        if (this._powerId)
+            this._power.disconnect(this._powerId);
+        this._powerId = 0;
         // Finish anything mid-transition right away.
         for (const actor of this._running.values())
             actor.destroy();

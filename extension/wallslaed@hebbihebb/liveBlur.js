@@ -79,8 +79,9 @@ const ACTIVE_US = 300 * 1000;
 const STYLESHEET_BRIGHTNESS = 0.6;
 
 export class LiveBlur {
-    constructor(settings, injections, layers) {
+    constructor(settings, injections, layers, power) {
         this._settings = settings;
+        this._power = power;
         this._layers = layers; // BlurLayers, for the baked wallpaper blur
         this._blurs = new Map(); // target -> Blur
         this._signals = [];
@@ -111,7 +112,8 @@ export class LiveBlur {
                 return result;
             });
         };
-        const popups = () => this._settings.get_boolean('blur-popups');
+        const popups = () => this._settings.get_boolean('blur-popups') &&
+            this._power?.level('popups') !== 'off';
 
         // Panel menus, quick settings, the calendar, the desktop menu and
         // context menus all open through a BoxPointer.
@@ -164,6 +166,18 @@ export class LiveBlur {
                     blur.destroy();
             }
         })]);
+        // A power mode that turns popup blur off takes it from open popups
+        // too; light and full apply from the next frame (before-update).
+        if (power) {
+            this._signals.push([power, power.connect('changed', () => {
+                if (power.level('popups') !== 'off')
+                    return;
+                for (const blur of [...this._blurs.values()]) {
+                    if (blur.category === 'popups')
+                        blur.destroy();
+                }
+            })]);
+        }
     }
 
     _look() {
@@ -180,7 +194,7 @@ export class LiveBlur {
             this._frameIds = [
                 stage.connect('before-update', () => {
                     for (const blur of this._blurs.values())
-                        blur.syncSource(this._baked(blur) ?? (this._cloneable(blur) ? CLONE : null));
+                        blur.syncSource(this._baked(blur, this._light(blur)) ?? (this._cloneable(blur) ? CLONE : null));
                     if (GLib.get_monotonic_time() < this._activeUntil)
                         this._redrawAll();
                 }),
@@ -199,9 +213,16 @@ export class LiveBlur {
         }
     }
 
+    // Whether the power level asks `blur` for the baked wallpaper blur even
+    // with windows behind it: it then shows the wallpaper frosted, not what is
+    // actually there, but costs nothing per frame.
+    _light(blur) {
+        return blur.category === 'popups' && this._power?.level('popups') === 'light';
+    }
+
     // The baked wallpaper blur for `blur`'s rectangle if only the wallpaper is
-    // behind it, else null.
-    _baked(blur) {
+    // behind it (or, if `light`, whatever is), else null.
+    _baked(blur, light = false) {
         const rect = blur.rect();
         if (!rect || Main.overview.visible || Main.layoutManager.screenTransition.visible)
             return null;
@@ -219,6 +240,8 @@ export class LiveBlur {
             if (child instanceof Clutter.Clone || drawnParts(child).some(a => overlaps(rect, extentsOf(a))))
                 return null;
         }
+        if (light)
+            return {content, index, monitor: Main.layoutManager.monitors[index]};
         if (Main.panel.visible && overlaps(rect, extentsOf(Main.panel)))
             return null;
         for (const actor of global.get_window_actors()) {

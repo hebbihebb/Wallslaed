@@ -11,6 +11,7 @@ It also does a few more things you might otherwise need several extensions for:
 - **Wallpaper browser:** search free animated wallpapers on Pixabay and Pexels and download them in one click.
 - **Blur:** a frosted-glass look behind the overview, top bar, menus, notifications and lock screen.
 - **Auto-hiding top bar:** the top bar slides away when a window needs the space.
+- **Power modes:** in Power Saver, the few effects that cost something get lighter on their own, and come back when you raise the power mode.
 
 Wallslæd is made for **GNOME 50 and 51 on Wayland**, and tested on Fedora 45 (GNOME 51) and Ubuntu 26.04 (GNOME 50).
 
@@ -120,6 +121,22 @@ On the **Appearance** page in the settings:
 - **App Windows** sets how strongly GNOME blurs behind apps that ask for it, such as GTK 4 apps with see-through backgrounds and some terminals. It's a GNOME 51 feature, so the group isn't shown on GNOME 50; off leaves GNOME's own strength.
 
 The blur is built to be light. Instead of blurring your wallpaper over and over, Wallslæd makes one small blurred copy when the wallpaper changes and reuses it everywhere. Menus only blur what's behind them while they're open.
+
+## Power modes
+
+Most of Wallslæd costs about nothing, measured: the blur on the top bar, dash and overview, the hiding top bar, and a still wallpaper. Three things cost noticeably more while they run: blurring the windows behind menus, the heavier transitions, and animated wallpapers. Wallslæd follows the power mode you pick in the system menu (top right) and turns those three down:
+
+| | Performance | Balanced | Power Saver |
+|---|---|---|---|
+| Menu and popup blur | Full | Full | Wallpaper only |
+| Transitions | Full | Full | Light effects only |
+| Animated wallpapers | Play | Play | Still frame |
+
+- **Wallpaper only:** menus and popups show the wallpaper frosted instead of blurring the windows behind them. It looks almost the same and costs nothing per frame.
+- **Light effects only:** Random picks from Crossfade, Zoom, Pixelate, Ripple and Light Leak, and any other effect plays as a crossfade.
+- **Still frame:** animated wallpapers pause. Music videos keep playing.
+
+Change any of these on the **Power** page in the settings (each can also be Off), or switch **Follow the Power Mode** off. A power mode only ever turns things down: anything you switched off on the other pages stays off. While effects are lighter, the Quick Settings tile says so, for example *Power Saver: lighter effects*. Without a power mode service (power-profiles-daemon or tuned-ppd), everything stays as set.
 
 ## Command line
 

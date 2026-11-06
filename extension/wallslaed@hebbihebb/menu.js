@@ -16,6 +16,15 @@ import {unpack} from './iface.js';
 
 const ICON = 'preferences-desktop-wallpaper-symbolic';
 
+// GNOME's own names for the power modes.
+function modeName(mode) {
+    return {
+        'power-saver': _('Power Saver'),
+        'balanced': _('Balanced'),
+        'performance': _('Performance'),
+    }[mode] ?? mode;
+}
+
 /**
  * One set of control items in a PopupMenuSection, kept current while the
  * daemon's state and the music player change. `leave` runs before an item
@@ -185,10 +194,11 @@ export class DesktopMenu {
 
 const Tile = GObject.registerClass(
 class WallslaedTile extends QuickSettings.QuickMenuToggle {
-    _init(daemon, host, openPreferences) {
+    _init(daemon, host, power, openPreferences) {
         super._init({title: 'Wallslæd', iconName: ICON, toggleMode: false});
         this._daemon = daemon;
         this._host = host;
+        this._power = power;
         this._controls = new Controls(daemon, host, openPreferences, {
             leave: () => Main.panel.closeQuickSettings(),
             pause: false,
@@ -209,6 +219,7 @@ class WallslaedTile extends QuickSettings.QuickMenuToggle {
         this._signals = [
             [daemon, daemon.connect('changed', () => this._sync())],
             [host, host.connect('media-changed', () => this._sync())],
+            [power, power.connect('changed', () => this._sync())],
         ];
         this._sync();
     }
@@ -225,7 +236,10 @@ class WallslaedTile extends QuickSettings.QuickMenuToggle {
             subtitle = _('Music Video');
         } else {
             this.checked = !state.paused;
-            subtitle = state.paused ? _('Paused') : null;
+            // Say when the power mode lightens the effects.
+            subtitle = state.paused ? _('Paused')
+                : this._power.reduced ? _('%s: lighter effects').format(modeName(this._power.mode))
+                    : null;
         }
         this.subtitle = subtitle;
         const current = state?.['media-title'] ||
@@ -245,9 +259,9 @@ class WallslaedTile extends QuickSettings.QuickMenuToggle {
 
 /** The Quick Settings tile: click pauses, the arrow opens the controls. */
 export class QuickTile {
-    constructor(daemon, host, openPreferences) {
+    constructor(daemon, host, power, openPreferences) {
         this._indicator = new QuickSettings.SystemIndicator();
-        this._indicator.quickSettingsItems.push(new Tile(daemon, host, openPreferences));
+        this._indicator.quickSettingsItems.push(new Tile(daemon, host, power, openPreferences));
         Main.panel.statusArea.quickSettings.addExternalIndicator(this._indicator);
     }
 
