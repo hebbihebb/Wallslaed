@@ -41,7 +41,9 @@ Rechecked 2026-11-06, GNOME alone, two writes, 0.35 s apart, 200 changes (`basel
 | --- | --- |
 | 1.90.1 (Fedora 45, GNOME 51.1) | hung in 3 of 3 runs, after at most 20, 180-200 and at most 20 changes; one stack is the exact ABBA above (main thread in `g_settings_backend_watch_weak_notify` from `g_object_remove_toggle_ref`, dconf worker in `ToggleQueue::lock()` from `g_settings_backend_dispatch_signal`) |
 | 1.90.1 with !1134 backported, loaded into the test shell only | 0 of 8 runs hung |
-| 1.88.0 (Ubuntu 26.04, GNOME 50.1, other hardware) | 0 of 3 runs hung; doesn't isolate GJS (other machine, distro and GNOME, whose `ui/background.js` may churn settings differently) |
+| 1.88.0 (Ubuntu 26.04, GNOME 50.1, other hardware) | 0 of 8 runs hung; doesn't isolate GJS (other machine, distro and GNOME, whose `ui/background.js` may churn settings differently) |
+
+Separately, a slower run on GNOME 50.1 / GJS 1.88 without Wallslæd's extension (the daemon changing the wallpaper every 1.5 s, the desktop menu opened every 10 changes, the screen locked and unlocked every 50) stopped answering D-Bus at change 216 (for at least 15 s, when the test ended it), in 1 of 2 runs; no stack was taken. Unconfirmed as this bug, but a reason not to treat GNOME 50 as safe, or the 1.5 s limit for stress tests as more than a margin.
 
 The backport is a 3-way merge with a trivial `#include` conflict in `toggle.cpp`, and `gjs_error()` replaced by `g_error()` (the former only exists in master); it builds as C++17 and passes all 30 toggle-queue unit tests, the MR's new ones included. Patch and logs: `.scratch/gjs-1134/`.
 
