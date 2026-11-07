@@ -355,11 +355,18 @@ export class Transitions {
         this._prewarmId = 0;
         this._prewarmActor = null;
         this._schedulePrewarm();
-        // Random's next pick was drawn for the old power level.
-        this._powerId = power?.connect('changed', () => {
+        // Anything that changes what the next change plays: draw Random's
+        // pick again and warm up whatever it is now.
+        const replan = () => {
             this._nextRandom = null;
             this._schedulePrewarm();
-        });
+        };
+        this._powerId = power?.connect('changed', replan);
+        this._settingsId = settings.connect('changed::transition', replan);
+        const st = St.Settings.get();
+        this._stIds = ['notify::enable-animations', 'notify::reduced-motion']
+            .filter(signal => !signal.endsWith('motion') || st.reduced_motion !== undefined)
+            .map(signal => st.connect(signal, replan));
 
         const self = this;
         // Same as GNOME's own _swapBackgroundActor, with a choice of effect
@@ -393,16 +400,28 @@ export class Transitions {
     _pick(background) {
         if (this._picked?.background === background)
             return this._picked.name;
+        const name = this._nextEffect();
+        this._nextRandom = null; // used up
+        this._picked = {background, name};
+        return name;
+    }
+
+    /**
+     * What the next wallpaper change will play, after every rule: Random's
+     * draw (kept until it is used), the power level, reduced motion and
+     * animations turned off. The warm-up and the change itself both ask
+     * here, so the warm-up never prepares an effect that won't play.
+     */
+    _nextEffect() {
         let name = this._settings.get_string('transition');
-        if (name === 'random') {
-            name = this._nextRandom ?? this._randomEffect();
-            this._nextRandom = null;
-        }
+        if (name === 'random')
+            name = this._nextRandom ??= this._randomEffect();
         name = this._allowed(name);
+        if (!St.Settings.get().enable_animations)
+            return 'none';
         // Reduced motion keeps a transition, just not a moving one.
         if (name !== 'none' && reducedMotion())
             name = 'fade';
-        this._picked = {background, name};
         return name;
     }
 
@@ -524,10 +543,7 @@ export class Transitions {
     }
 
     _prewarm() {
-        let name = this._settings.get_string('transition');
-        if (name === 'random')
-            name = this._nextRandom ??= this._randomEffect();
-        name = this._allowed(name);
+        const name = this._nextEffect();
         if (this._warm.has(name) || this._running.size || this._prewarmActor)
             return;
         let effects;
@@ -546,9 +562,18 @@ export class Transitions {
             effect.setup?.(16, 16);
         }
         this._prewarmActor = actor;
+        // Warm only once the effect has really drawn: an offscreen effect has
+        // its texture then. A frame that skipped the actor tries again.
+        let tries = 0;
+        const drawn = () => effects.every(e => !(e instanceof Clutter.OffscreenEffect) || e.get_texture());
         const id = global.stage.connect('after-paint', () => {
+            if (!drawn() && ++tries < 5) {
+                actor.queue_redraw();
+                return;
+            }
             global.stage.disconnect(id);
-            this._warm.add(name);
+            if (drawn())
+                this._warm.add(name);
             if (this._prewarmActor === actor)
                 this._prewarmActor = null;
             actor.destroy();
@@ -579,6 +604,10 @@ export class Transitions {
         if (this._powerId)
             this._power.disconnect(this._powerId);
         this._powerId = 0;
+        this._settings.disconnect(this._settingsId);
+        for (const id of this._stIds)
+            St.Settings.get().disconnect(id);
+        this._stIds = [];
         // Finish anything mid-transition right away.
         for (const actor of this._running.values())
             actor.destroy();
