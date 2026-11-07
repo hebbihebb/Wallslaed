@@ -221,6 +221,9 @@ class WallslaedTile extends QuickSettings.QuickMenuToggle {
             [host, host.connect('media-changed', () => this._sync())],
             [power, power.connect('changed', () => this._sync())],
         ];
+        // GNOME can dispose the tile without calling destroy() (shell
+        // shutdown, a parent destroyed first): clean up on the signal too.
+        this.connect('destroy', () => this._cleanup());
         this._sync();
     }
 
@@ -248,11 +251,22 @@ class WallslaedTile extends QuickSettings.QuickMenuToggle {
         this._controls.refresh();
     }
 
-    destroy() {
+    _cleanup() {
+        if (!this._signals)
+            return;
         for (const [obj, id] of this._signals)
             obj.disconnect(id);
-        this._signals = [];
-        this._controls.section = null; // destroyed with the menu
+        this._signals = null;
+        // The section goes with the menu; a pending ListMedia reply sees null.
+        this._controls.section = null;
+        // Quick Settings parents the menu to its own overlay, not to the
+        // tile, so destroying the tile alone leaves the menu behind.
+        this.menu.close(false);
+        this.menu.destroy();
+    }
+
+    destroy() {
+        this._cleanup();
         super.destroy();
     }
 });
