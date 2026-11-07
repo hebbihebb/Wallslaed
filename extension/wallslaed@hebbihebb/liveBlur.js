@@ -83,7 +83,11 @@ export class LiveBlur {
         this._settings = settings;
         this._power = power;
         this._layers = layers; // BlurLayers, for the baked wallpaper blur
-        this._blurs = new Map(); // target -> Blur
+        this._blurs = new Map(); // target -> Blur, while its popup is open
+        // Panel menus' blurs while their menu is closed, ready for the next
+        // open: building a blur (and restyling the menu for it) on every open
+        // is most of what opening costs us.
+        this._kept = new Map(); // target -> Blur
         this._signals = [];
         this._frameIds = []; // stage signals, while any blur is up
         this._activeUntil = 0; // monotonic µs
@@ -116,10 +120,23 @@ export class LiveBlur {
             this._power?.level('popups') !== 'off';
 
         // Panel menus, quick settings, the calendar, the desktop menu and
-        // context menus all open through a BoxPointer.
-        after(BoxPointer.BoxPointer.prototype, 'open', box => {
-            if (popups())
-                self._attach('popups', box, box.bin.get_child() ?? box.bin);
+        // context menus all open through a BoxPointer. The menu gets its
+        // clear background before GNOME opens (and measures and styles) it:
+        // restyled afterwards, all of it was styled a second time.
+        injections.overrideMethod(BoxPointer.BoxPointer.prototype, 'open', original => function (...args) {
+            const target = this.bin.get_child() ?? this.bin;
+            const wanted = !self._destroyed && popups();
+            if (wanted && !self._blurs.has(target) && !self._kept.has(target))
+                setTint(target, self._look(), self._expectBaked());
+            const result = original.apply(this, args);
+            if (wanted) {
+                try {
+                    self._attach('popups', this, target);
+                } catch (e) {
+                    console.warn(`Wallslæd: popup blur: ${e.message}`);
+                }
+            }
+            return result;
         });
         after(ModalDialog.ModalDialog.prototype, 'open', dialog => {
             if (popups())
@@ -158,10 +175,10 @@ export class LiveBlur {
         // loses its blur now; switched on, it applies from the next popup.
         this._signals.push([settings, settings.connect('changed', (_s, key) => {
             if (key === 'blur-strength' || key === 'blur-brightness') {
-                this._blurs.forEach(blur => blur.setLook(this._look()));
+                this._all().forEach(blur => blur.setLook(this._look()));
                 return;
             }
-            for (const blur of [...this._blurs.values()]) {
+            for (const blur of this._all()) {
                 if (CATEGORY_KEYS[blur.category] === key && !settings.get_boolean(key))
                     blur.destroy();
             }
@@ -172,12 +189,34 @@ export class LiveBlur {
             this._signals.push([power, power.connect('changed', () => {
                 if (power.level('popups') !== 'off')
                     return;
-                for (const blur of [...this._blurs.values()]) {
+                for (const blur of this._all()) {
                     if (blur.category === 'popups')
                         blur.destroy();
                 }
             })]);
         }
+        // Kept blurs remember the menu's colours from the old theme.
+        const theme = St.ThemeContext.get_for_stage(global.stage);
+        this._signals.push([theme, theme.connect('changed', () => {
+            for (const blur of [...this._kept.values()])
+                blur.destroy();
+        })]);
+    }
+
+    _all() {
+        return [...this._blurs.values(), ...this._kept.values()];
+    }
+
+    // Whether a popup about to open will most likely show the baked blur:
+    // its tint is set for that, so choosing it changes no style.
+    _expectBaked() {
+        return this._power?.level('popups') === 'light' &&
+            !!this._layers.bakedContent(Main.layoutManager.primaryIndex);
+    }
+
+    // Pick what `blur` shows, from what is behind it now.
+    _choose(blur) {
+        blur.syncSource(this._baked(blur, this._light(blur)) ?? (this._cloneable(blur) ? CLONE : null));
     }
 
     _look() {
@@ -194,7 +233,7 @@ export class LiveBlur {
             this._frameIds = [
                 stage.connect('before-update', () => {
                     for (const blur of this._blurs.values())
-                        blur.syncSource(this._baked(blur, this._light(blur)) ?? (this._cloneable(blur) ? CLONE : null));
+                        this._choose(blur);
                     if (GLib.get_monotonic_time() < this._activeUntil)
                         this._redrawAll();
                 }),
@@ -226,7 +265,11 @@ export class LiveBlur {
         const rect = blur.rect();
         if (!rect || Main.overview.visible || Main.layoutManager.screenTransition.visible)
             return null;
-        const index = Main.layoutManager.monitors.findIndex(m => within(rect, m));
+        // The monitor under its centre: a menu sliding in from the top edge
+        // starts partly off screen, and the baked blur still covers the part
+        // that shows.
+        const centre = {x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, width: 0, height: 0};
+        const index = Main.layoutManager.monitors.findIndex(m => within(centre, m));
         const content = index < 0 ? null : this._layers.bakedContent(index);
         const manager = Main.layoutManager._bgManagers[index];
         // A transition (an outgoing background) on it.
@@ -300,17 +343,48 @@ export class LiveBlur {
      * just below `root` in its parent.
      */
     _attach(category, root, target) {
-        if (this._blurs.has(target) || !root.get_parent())
+        if (this._blurs.has(target))
             return;
-        const blur = new Blur(category, root, target, this._look(), () => {
-            this._blurs.delete(target);
+        if (!root.get_parent()) {
+            unstyle(target);
+            return;
+        }
+        const kept = this._kept.get(target);
+        if (kept) {
+            this._kept.delete(target);
+            this._blurs.set(target, kept);
             this._syncFrameHook();
-        }, () => {
-            this._activate();
-            this._redrawAll();
+            kept.reopen();
+            return;
+        }
+        // Only the top bar's menus are kept: a fixed handful, each reopened
+        // often. Other popups come and go, and keeping theirs would grow.
+        const keep = category === 'popups' &&
+            Object.values(Main.panel.statusArea).some(button => button?.menu?.actor === root);
+        const blur = new Blur(category, root, target, this._look(), {
+            keep,
+            destroyed: b => {
+                if (this._blurs.get(target) === b)
+                    this._blurs.delete(target);
+                if (this._kept.get(target) === b)
+                    this._kept.delete(target);
+                this._syncFrameHook();
+            },
+            closed: b => {
+                this._blurs.delete(target);
+                this._kept.set(target, b);
+                this._syncFrameHook();
+            },
+            placed: b => this._choose(b),
+            activity: () => {
+                this._activate();
+                this._redrawAll();
+            },
         });
-        this._blurs.set(target, blur);
-        this._syncFrameHook();
+        if (!blur.destroyed && !blur._closed) {
+            this._blurs.set(target, blur);
+            this._syncFrameHook();
+        }
     }
 
     destroy() {
@@ -318,9 +392,10 @@ export class LiveBlur {
         for (const [obj, id] of this._signals)
             obj.disconnect(id);
         this._signals = [];
-        for (const blur of [...this._blurs.values()])
+        for (const blur of this._all())
             blur.destroy();
         this._blurs.clear();
+        this._kept.clear();
         this._syncFrameHook();
     }
 }
@@ -354,15 +429,54 @@ function childOf(container, actor) {
     return a;
 }
 
+// The popup's clear background, with a tint that makes up for the blur's
+// brightness. The tint's transparency scales with the brightness setting; the
+// baked blur has the brightness in it already, so then the tint leaves that
+// part out. Styling a popup restyles everything in it, so this changes the
+// style only when the tint actually changes.
+function setTint(target, look, baked) {
+    let surface = target._wallslaedSurface;
+    if (!surface) {
+        // The popup's own colour, read before our class clears it.
+        surface = target._wallslaedSurface = {
+            style: target.style,
+            tint: target.get_theme_node().get_background_color(),
+            alpha: null,
+        };
+        target.add_style_class_name(SURFACE_CLASS);
+    }
+    const {red, green, blue, alpha} = surface.tint;
+    const clear = (1 - alpha / 255) * (baked ? 1 : look.brightness) / STYLESHEET_BRIGHTNESS;
+    const a = Math.min(1, Math.max(0, 1 - clear)).toFixed(3);
+    if (a === surface.alpha)
+        return;
+    surface.alpha = a;
+    target.style = `${surface.style ?? ''} background-color: rgba(${red}, ${green}, ${blue}, ${a});`;
+}
+
+function unstyle(target) {
+    const surface = target._wallslaedSurface;
+    if (!surface)
+        return;
+    delete target._wallslaedSurface;
+    target.style = surface.style;
+    target.remove_style_class_name(SURFACE_CLASS);
+}
+
 class Blur {
-    constructor(category, root, target, look, onDestroyed, onActivity) {
+    // `callbacks`: destroyed(), closed() (only with `keep`: the popup closed
+    // and the blur waits for reopen()), placed() (laid out: pick a source
+    // now, before this frame is drawn), activity() (input inside the popup).
+    constructor(category, root, target, look, callbacks) {
         this.category = category;
         this._root = root;
         this._target = target;
-        this._onDestroyed = onDestroyed;
+        this._callbacks = callbacks;
+        this._keep = callbacks.keep;
         this._signals = [];
-        this._destroyed = false;
+        this.destroyed = false;
         this._laterId = 0;
+        this._look = look;
 
         const parent = root.get_parent();
         // At the parent's origin whatever its layout: fixed layouts leave it
@@ -379,33 +493,22 @@ class Blur {
         // An St.Widget: a bare actor has no paint volume, and the blur needs
         // one to know what to cover.
         this._part = new St.Widget({reactive: false});
-        // Full brightness: the popup's tint darkens, inside its rounded corners.
-        this._effect = new Shell.BlurEffect({mode: Shell.BlurMode.BACKGROUND, radius: look.radius, brightness: 1});
-        this._part.add_effect(this._effect);
         this._group.add_child(this._part);
-        // Over bare desktop: the baked blur, clipped to the same rectangle.
-        // Unlike the live blur it has the brightness in it, so its corners
-        // are rounded like the popup's, or they show as a dark square.
-        this._baked = null; // {content, index, monitor} shown, or null for live
-        this._bakedClip = new Clutter.Actor({clip_to_allocation: true, visible: false});
-        this._bakedPicture = new Clutter.Actor();
-        this._bakedClip.add_child(this._bakedPicture);
-        this._group.add_child(this._bakedClip);
-        // Over windows: the window group cloned, clipped to the rectangle,
-        // blurred in ACTOR mode on the clip so the blur is only this size.
-        this._cloned = false;
-        this._cloneClip = new Clutter.Actor({clip_to_allocation: true, visible: false});
-        this._clone = new Clutter.Clone({source: global.window_group});
-        this._cloneClip.add_child(this._clone);
-        this._cloneEffect = new Shell.BlurEffect({mode: Shell.BlurMode.ACTOR, radius: look.radius, brightness: 1});
-        this._cloneClip.add_effect(this._cloneEffect);
-        this._group.add_child(this._cloneClip);
+        // What shows, chosen by LiveBlur each frame: 'baked', 'clone', 'live',
+        // or null before the first choice. Each source is built the first
+        // time it is chosen: most popups only ever need one.
+        this._kind = null;
+        this._baked = null; // {content, index, monitor} while baked
+        this._effect = null; // live: GNOME's background blur on _part
+        this._bakedClip = null;
+        this._bakedPicture = null;
+        this._cloneClip = null;
+        this._clone = null;
+        this._cloneEffect = null;
         parent.insert_child_below(this._group, root);
-        target.add_style_class_name(SURFACE_CLASS);
-        this._style = target.style;
-        this._tint = target.get_theme_node().get_background_color();
-        this._look = look;
-        this.setLook(look);
+        // Styled before the popup opened (LiveBlur), or now.
+        if (!target._wallslaedSurface)
+            setTint(target, look, false);
 
         // Watch everything between the popup and the target: any of them can
         // move, scale or fade it.
@@ -422,7 +525,8 @@ class Blur {
         // Pointer and key events inside the popup come before the hover and
         // press changes they cause.
         this._signals.push([root, root.connect('captured-event', () => {
-            onActivity();
+            if (!this._closed)
+                callbacks.activity();
             return Clutter.EVENT_PROPAGATE;
         })]);
         this._signals.push([root, root.connect('destroy', () => this.destroy())]);
@@ -438,13 +542,28 @@ class Blur {
         this._update();
     }
 
+    /** Whether it is waiting, hidden, for its menu to open again. */
+    get _closed() {
+        return !!this._parked;
+    }
+
+    // For the tests' probes: what shows.
+    get _cloned() {
+        return this._kind === 'clone';
+    }
+
+    reopen() {
+        this._parked = false;
+        this._update();
+    }
+
     // Move the blur with its popup at once. A popup often moves in the layout
     // pass itself (a menu follows its button while the top bar slides in),
     // after this frame's _update() has run, so the blur trailed it by a frame
     // all through the slide. A translation needs no new layout: it shows in
     // the frame being drawn. Sizes catch up in _update(), which resets it.
     _follow() {
-        if (this._destroyed || this._groupGone || !this._target || !this._group.mapped)
+        if (this.destroyed || this._groupGone || !this._target || !this._group.mapped)
             return;
         const [px, py] = this._group.get_parent().get_transformed_position();
         const extents = this._target.get_transformed_extents();
@@ -454,13 +573,13 @@ class Blur {
         const dx = x - this._part.x, dy = y - this._part.y;
         this._group.set_translation(dx, dy, 0);
         // The baked picture and the clone stay put on screen while the group moves.
-        this._bakedPicture.set_translation(-dx, -dy, 0);
-        this._clone.set_translation(-dx, -dy, 0);
+        this._bakedPicture?.set_translation(-dx, -dy, 0);
+        this._clone?.set_translation(-dx, -dy, 0);
     }
 
     // Once per frame at most, and never in the middle of a relayout.
     _queueUpdate() {
-        if (this._laterId || this._destroyed)
+        if (this._laterId || this.destroyed)
             return;
         this._laterId = global.compositor.get_laters().add(Meta.LaterType.BEFORE_REDRAW, () => {
             this._laterId = 0;
@@ -469,17 +588,14 @@ class Blur {
         });
     }
 
-    // The tint's transparency scales with the brightness setting. The baked
-    // blur has the brightness in it already: the tint leaves out that part.
     setLook(look) {
         this._look = look;
-        const {radius, brightness} = look;
-        this._effect.radius = radius;
-        this._cloneEffect.radius = radius;
-        const {red, green, blue, alpha} = this._tint;
-        const clear = (1 - alpha / 255) * (this._baked ? 1 : brightness) / STYLESHEET_BRIGHTNESS;
-        const a = Math.min(1, Math.max(0, 1 - clear)).toFixed(3);
-        this._target.style = `${this._style ?? ''} background-color: rgba(${red}, ${green}, ${blue}, ${a});`;
+        if (this._effect)
+            this._effect.radius = look.radius;
+        if (this._cloneEffect)
+            this._cloneEffect.radius = look.radius;
+        if (this._target)
+            setTint(this._target, look, this._kind === 'baked');
     }
 
     get group() {
@@ -488,42 +604,75 @@ class Blur {
 
     /** The blurred rectangle in stage coordinates, or null while it isn't shown. */
     rect() {
-        if (this._destroyed || !this._group.mapped)
+        if (this.destroyed || this._parked || !this._target || !this._group.visible || !this._root.visible)
             return null;
-        return extentsOf(this._part);
+        const r = extentsOf(this._target);
+        return [r.x, r.y, r.width, r.height].every(Number.isFinite) && r.width > 0 && r.height > 0 ? r : null;
     }
 
     // Show `source`: the baked blur ({content, index, monitor}, see
     // LiveBlur._baked), CLONE, or if null the live blur.
     syncSource(source) {
-        const baked = source === CLONE ? null : source;
-        const cloned = source === CLONE;
-        if (this._destroyed || (baked?.content === this._baked?.content && cloned === this._cloned))
+        if (this.destroyed || this._parked)
             return;
-        const wasBaked = !!this._baked;
-        this._baked = baked;
-        this._cloned = cloned;
-        this._effect.enabled = !baked && !cloned;
-        this._bakedClip.visible = !!baked;
-        this._cloneClip.visible = cloned;
+        const kind = source === CLONE ? 'clone' : source ? 'baked' : 'live';
+        if (kind === this._kind && (kind !== 'baked' || source.content === this._baked?.content))
+            return;
+        this._kind = kind;
+        this._baked = kind === 'baked' ? source : null;
+        if (kind === 'live' && !this._effect) {
+            // Full brightness: the popup's tint darkens, inside its rounded corners.
+            this._effect = new Shell.BlurEffect({
+                mode: Shell.BlurMode.BACKGROUND, radius: this._look.radius, brightness: 1,
+            });
+            this._part.add_effect(this._effect);
+        }
+        if (kind === 'clone' && !this._cloneClip) {
+            // Over windows: the window group cloned, clipped to the rectangle,
+            // blurred in ACTOR mode on the clip so the blur is only this size.
+            this._cloneClip = new Clutter.Actor({clip_to_allocation: true, visible: false});
+            this._clone = new Clutter.Clone({source: global.window_group});
+            this._cloneClip.add_child(this._clone);
+            this._cloneEffect = new Shell.BlurEffect({
+                mode: Shell.BlurMode.ACTOR, radius: this._look.radius, brightness: 1,
+            });
+            this._cloneClip.add_effect(this._cloneEffect);
+            this._group.add_child(this._cloneClip);
+        }
+        if (kind === 'baked' && !this._bakedClip) {
+            // Over bare desktop: the baked blur, clipped to the same
+            // rectangle. Unlike the live blur it has the brightness in it, so
+            // its corners are rounded like the popup's, or they show as a
+            // dark square.
+            this._bakedClip = new Clutter.Actor({clip_to_allocation: true, visible: false});
+            this._bakedPicture = new Clutter.Actor();
+            this._bakedClip.add_child(this._bakedPicture);
+            this._group.add_child(this._bakedClip);
+        }
+        if (this._effect)
+            this._effect.enabled = kind === 'live';
+        if (this._cloneClip)
+            this._cloneClip.visible = kind === 'clone';
+        if (this._bakedClip)
+            this._bakedClip.visible = kind === 'baked';
         this._placeClone();
-        if (baked) {
+        if (kind === 'baked') {
             // Its own content over the same background: the rounded clip is
             // per popup, and the overview and top bar show the shared one.
-            const content = Meta.BackgroundContent.new(global.display, baked.index);
-            content.background = baked.content.background;
+            const content = Meta.BackgroundContent.new(global.display, source.index);
+            content.background = source.content.background;
             content.rounded_clip_radius = this._target.get_theme_node().get_border_radius(St.Corner.TOPLEFT);
-            this._bakedPicture.set({content, width: baked.monitor.width, height: baked.monitor.height});
-        } else
+            this._bakedPicture.set({content, width: source.monitor.width, height: source.monitor.height});
+        } else if (this._bakedPicture) {
             this._bakedPicture.content = null;
+        }
         this._placeBaked();
-        if (wasBaked !== !!baked)
-            this.setLook(this._look);
+        setTint(this._target, this._look, kind === 'baked');
     }
 
     // The window group's clone, positioned so its piece under the popup shows.
     _placeClone() {
-        if (!this._cloned)
+        if (this._kind !== 'clone')
             return;
         this._cloneClip.set_position(this._part.x, this._part.y);
         this._cloneClip.set_size(this._part.width, this._part.height);
@@ -537,12 +686,14 @@ class Blur {
 
     // The monitor-sized picture, positioned so its piece under the popup shows.
     _placeBaked() {
-        if (!this._baked)
+        if (this._kind !== 'baked')
             return;
         this._bakedClip.set_position(this._part.x, this._part.y);
         this._bakedClip.set_size(this._part.width, this._part.height);
         const [x, y] = this._part.get_transformed_position();
         const {monitor} = this._baked;
+        if (![x, y].every(Number.isFinite))
+            return;
         this._bakedPicture.set_position(Math.round(monitor.x - x), Math.round(monitor.y - y));
         // In the picture's (the monitor's) coordinates.
         const bounds = new Graphene.Rect();
@@ -551,14 +702,14 @@ class Blur {
     }
 
     redraw() {
-        if (!this._destroyed && !this._baked && !this._cloned && this._part.mapped)
+        if (!this.destroyed && this._kind === 'live' && this._part.mapped)
             this._part.queue_redraw();
     }
 
     // Whether `region`, the stage area a frame redraws, covers only part of
     // the blurred rectangle.
     partlyIn(region) {
-        if (this._destroyed || this._baked || this._cloned || !this._part.mapped)
+        if (this.destroyed || this._kind !== 'live' || !this._part.mapped)
             return false;
         // A pixel inside each edge, so rounding never makes a full redraw
         // look partial.
@@ -574,11 +725,18 @@ class Blur {
     }
 
     _update() {
-        if (this._destroyed)
+        if (this.destroyed || this._parked)
             return;
-        // Gone once the popup has finished closing.
+        // The popup has finished closing: a kept blur hides and waits for
+        // the next open; any other goes.
         if (!this._root.visible || !this._target.get_parent()) {
-            this.destroy();
+            if (this._keep && this._target.get_parent()) {
+                this._parked = true;
+                this._group.hide();
+                this._callbacks.closed(this);
+            } else {
+                this.destroy();
+            }
             return;
         }
 
@@ -609,28 +767,29 @@ class Blur {
         this._part.set_position(Math.round(x1), Math.round(y1));
         this._part.set_size(Math.round(w), Math.round(h));
         this._group.set_translation(0, 0, 0);
-        this._bakedPicture.set_translation(0, 0, 0);
-        this._clone.set_translation(0, 0, 0);
+        this._bakedPicture?.set_translation(0, 0, 0);
+        this._clone?.set_translation(0, 0, 0);
+        // Before this frame is drawn, so the first frame already shows the
+        // right source (and builds only that one).
+        this._callbacks.placed(this);
         this._placeBaked();
         this._placeClone();
     }
 
     destroy() {
-        if (this._destroyed)
+        if (this.destroyed)
             return;
-        this._destroyed = true;
+        this.destroyed = true;
         if (this._laterId)
             global.compositor.get_laters().remove(this._laterId);
         this._laterId = 0;
         for (const [obj, id] of this._signals)
             obj.disconnect(id);
         this._signals = [];
-        if (this._target) {
-            this._target.style = this._style;
-            this._target.remove_style_class_name(SURFACE_CLASS);
-        }
+        if (this._target)
+            unstyle(this._target);
         if (!this._groupGone)
             this._group.destroy();
-        this._onDestroyed();
+        this._callbacks.destroyed(this);
     }
 }
