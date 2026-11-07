@@ -517,13 +517,16 @@ function childOf(container, actor) {
 function setTint(target, look, baked) {
     let surface = target._wallslaedSurface;
     if (!surface) {
-        // The popup's own colour, read before our class clears it.
+        // The tint is our stylesheet's colour for this kind of popup
+        // (stylesheet.css, `.wallslaed-blur-surface`): read once the class is
+        // on. GNOME's own colour, read before, is opaque and hid the blur.
+        const style = target.style;
+        target.add_style_class_name(SURFACE_CLASS);
         surface = target._wallslaedSurface = {
-            style: target.style,
+            style,
             tint: target.get_theme_node().get_background_color(),
             alpha: null,
         };
-        target.add_style_class_name(SURFACE_CLASS);
     }
     const {red, green, blue, alpha} = surface.tint;
     const clear = (1 - alpha / 255) * (baked ? 1 : look.brightness) / STYLESHEET_BRIGHTNESS;
