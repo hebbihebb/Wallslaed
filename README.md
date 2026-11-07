@@ -122,6 +122,8 @@ On the **Appearance** page in the settings:
 
 The blur is built to be light. Instead of blurring your wallpaper over and over, Wallslæd makes one small blurred copy when the wallpaper changes and reuses it everywhere. Menus only blur what's behind them while they're open.
 
+**Known limitation (GNOME):** hovering a menu with windows moving behind it can still stutter a little, which is most noticeable in Power Saver. Part of this cost is in GNOME's own blur effect, which Wallslæd uses for that case. Each time the picture behind a menu changes, the effect creates three new GPU buffers and throws them away again, instead of keeping them. A test version that kept its buffers made hover frames about twice as fast, but it would mean replacing GNOME's blur with Wallslæd's own, so it isn't included. In Power Saver, menus use the cheaper frosted wallpaper instead, which avoids most of this.
+
 ## Power modes
 
 Most of Wallslæd costs about nothing, measured: the blur on the top bar, dash and overview, the hiding top bar, and a still wallpaper. Three things cost noticeably more while they run: blurring the windows behind menus, the heavier transitions, and animated wallpapers. Wallslæd follows the power mode you pick in the system menu (top right) and turns those three down:
