@@ -28,6 +28,9 @@ const BLUR_KEEP: usize = 40;
 const PART_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(3600);
 /// Don't bother scaling images that are at most this much bigger than the screen.
 const SCALE_SLACK: f64 = 1.10;
+/// Without prescaling: how many times the screen an original may be before
+/// it gets a smaller copy (see prepare_static).
+const ORIGINAL_MAX: f64 = 2.0;
 /// Pictures bigger than this aren't blurred here (the extension falls back to
 /// a GPU blur): decoding one costs 3 bytes a pixel, ~120 MB at this size.
 const BLUR_MAX_SOURCE_PIXELS: u64 = 40_000_000;
@@ -162,27 +165,38 @@ fn prepare_static(job: &Job, key: &str) -> Result<(Prepared, Option<DynamicImage
         baked_with: None,
         key: String::new(),
     };
+    let (sw, sh) = (job.screen.0.max(1) as f64, job.screen.1.max(1) as f64);
+    // Smallest size that still covers the screen ("zoom" in GNOME terms).
+    let cover = |w: u32, h: u32| (sw / w as f64).max(sh / h as f64);
+    // Without prescaling originals are used as they are, up to ORIGINAL_MAX
+    // times the screen: GNOME Shell holds each wallpaper (current, next and
+    // previous) as a texture of its full size, and a 16000-pixel photo would
+    // take a gigabyte of it. Bigger ones get a copy that size.
+    let room = if job.prescale { 1.0 } else { ORIGINAL_MAX };
     if !job.prescale {
-        return Ok((done(src.to_path_buf()), None));
+        let fits = reader(src)
+            .and_then(|r| r.into_dimensions().map_err(|e| e.to_string()))
+            .map_or(true, |(w, h)| cover(w, h) * room >= 1.0);
+        if fits {
+            return Ok((done(src.to_path_buf()), None));
+        }
     }
 
-    let out = job.cache_dir.join(format!("{key}.jpg"));
+    let out = job.cache_dir.join(if job.prescale { format!("{key}.jpg") } else { format!("{key}-original.jpg") });
     if reusable(&out) {
         touch(&out);
         return Ok((done(out), None));
     }
 
-    let (sw, sh) = (job.screen.0.max(1) as f64, job.screen.1.max(1) as f64);
-    // Smallest size that still covers the screen ("zoom" in GNOME terms).
-    let cover = |w: u32, h: u32| (sw / w as f64).max(sh / h as f64);
-    // The size that covers the screen, for a picture of (w, h) as shown.
+    // The size that covers the screen (`room` times over), for a picture of
+    // (w, h) as shown.
     let fit = |w: u32, h: u32| {
-        let s = cover(w, h).min(1.0);
+        let s = (cover(w, h) * room).min(1.0);
         (((w as f64 * s).round() as u32).max(1), ((h as f64 * s).round() as u32).max(1))
     };
     let dst = match reader(src).and_then(|r| r.into_dimensions().map_err(|e| e.to_string())) {
         Ok((w, h)) => {
-            if cover(w, h) * SCALE_SLACK >= 1.0 {
+            if cover(w, h) * room * SCALE_SLACK >= 1.0 {
                 return Ok((done(src.to_path_buf()), None));
             }
             let mut decoder = reader(src)?.into_decoder().map_err(|e| e.to_string())?;
@@ -605,6 +619,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn originals_are_capped_at_twice_the_screen() {
+        let dir = std::env::temp_dir().join(format!("wallslaed-orig-{}", std::process::id()));
+        let cache = dir.join("cache");
+        std::fs::create_dir_all(&dir).unwrap();
+        let huge = dir.join("huge.png");
+        let big = dir.join("big.png");
+        image::RgbImage::new(8000, 4000).save(&huge).unwrap();
+        image::RgbImage::new(3000, 1600).save(&big).unwrap();
+        let job = |p: &Path| Job {
+            source: p.to_str().unwrap().into(),
+            screen: (1920, 1080),
+            prescale: false,
+            cache_dir: cache.clone(),
+            blur: None,
+            keep: Vec::new(),
+            cache_bytes: u64::MAX,
+        };
+        let out = prepare(&job(&huge)).unwrap().picture.unwrap();
+        assert!(out.starts_with(&cache));
+        assert_eq!(image::image_dimensions(&out).unwrap(), (4320, 2160), "twice the screen's cover size");
+        assert_eq!(prepare(&job(&big)).unwrap().picture.unwrap(), big, "under twice: used as is");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn scales_large_images_and_passes_small_ones() {
         let dir = std::env::temp_dir().join(format!("wallslaed-prep-{}", std::process::id()));
         let cache = dir.join("cache");
@@ -844,6 +883,8 @@ mod tests {
         image::RgbImage::new(7000, 6000).save(&huge).unwrap();
         let mut job = blur_job(&huge, &cache, Blur::new(30, 0.6));
         job.prescale = false;
+        // A screen it is under twice the size of, so the original is used as is.
+        job.screen = (3840, 3240);
         assert!(prepare(&job).unwrap().blurred.is_none(), "42 MP is over the budget");
         std::fs::remove_dir_all(&dir).unwrap();
     }

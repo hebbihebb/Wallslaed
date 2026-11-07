@@ -112,6 +112,8 @@ struct Daemon {
     locked: bool,
     pending_tick: bool,
     screen: (u32, u32),
+    /// Bumped by each MonitorsChanged: only the newest query's answer counts.
+    screen_query: u64,
     conn: Option<gio::DBusConnection>,
     state_path: PathBuf,
     cache_dir: PathBuf,
@@ -183,6 +185,7 @@ pub fn run() -> Result<(), String> {
         locked: false,
         pending_tick: false,
         screen: FALLBACK_SCREEN,
+        screen_query: 0,
         conn: None,
         state_path: state_dir.join("state.json"),
         cache_dir,
@@ -313,14 +316,7 @@ fn on_bus(d: &Shared, conn: gio::DBusConnection) {
             Some("/org/gnome/Mutter/DisplayConfig"),
             None,
             gio::DBusSignalFlags::NONE,
-            move |sig| {
-                let screen = query_screen(sig.connection);
-                let mut s = d1.borrow_mut();
-                if s.screen != screen {
-                    s.screen = screen;
-                    s.preloaded.clear();
-                }
-            },
+            move |sig| monitors_changed(&d1, sig.connection.clone()),
         );
     std::mem::forget(_sub);
 
@@ -546,9 +542,18 @@ fn connect_settings(d: &Shared) {
             d1.borrow_mut().preloaded.clear();
             advance(&d1, Step::Reload);
         }
-        "blur-strength" | "blur-brightness" | "blur-overview" | "blur-panel" => queue_rebake(&d1),
+        "blur-strength" | "blur-brightness" | "blur-overview" | "blur-panel" | "blur-popups" => {
+            queue_rebake(&d1)
+        }
         _ => {}
     });
+}
+
+/// The baked wallpaper blur, if any of its users (overview, top bar, popups)
+/// is on. Popups use it over the bare desktop, and in place of a live blur
+/// when the power mode lightens them, so they need it on their own too.
+fn baked_blur(users: [bool; 3], strength: u32, brightness: f64) -> Option<Blur> {
+    users.contains(&true).then(|| Blur::new(strength, brightness))
 }
 
 fn folder(settings: &gio::Settings) -> PathBuf {
@@ -736,18 +741,42 @@ fn show(d: &Shared, path: String) {
         let mut s = d.borrow_mut();
         s.generation += 1;
         let ready = s.preloaded.iter().position(|p| p.source == path).map(|i| s.preloaded.swap_remove(i));
-        // The cache can lose files (cleared, full disk): prepare it again.
-        let ready = ready.filter(|p| [&p.picture, &p.playable, &p.blurred].into_iter().flatten().all(|f| f.exists()));
         (s.generation, s.job(path), ready)
     };
-    if let Some(p) = ready {
-        apply(d, p);
-        return;
-    }
     let d = d.clone();
     glib::spawn_future_local(async move {
-        let result = gio::spawn_blocking(move || prepare::prepare(&job)).await;
+        // The cache can lose files (cleared, full disk): prepare it again.
+        // Even asking whether a file exists can hang (a picture used as is,
+        // on a network mount that dropped), so off the main loop, where it
+        // would stop every D-Bus call.
+        let ready = match ready {
+            Some(p) => {
+                let files: Vec<PathBuf> =
+                    [&p.picture, &p.playable, &p.blurred].into_iter().flatten().cloned().collect();
+                let there = gio::spawn_blocking(move || files.iter().all(|f| f.exists())).await;
+                there.unwrap_or(false).then_some(p)
+            }
+            None => None,
+        };
         if d.borrow().generation != generation {
+            return;
+        }
+        if let Some(p) = ready {
+            apply(&d, p);
+            return;
+        }
+        let (screen, source) = (job.screen, job.source.clone());
+        let result = gio::spawn_blocking(move || prepare::prepare(&job)).await;
+        let (current, resized) = {
+            let s = d.borrow();
+            (s.generation == generation, s.screen != screen)
+        };
+        if !current {
+            return;
+        }
+        // The monitors changed while it was prepared: at the old size.
+        if resized {
+            show(&d, source);
             return;
         }
         match result {
@@ -875,13 +904,14 @@ fn preload(d: &Shared) {
         let d = d.clone();
         glib::spawn_future_local(async move {
             let source = job.source.clone();
+            let screen = job.screen;
             let result = gio::spawn_blocking(move || prepare::prepare(&job)).await;
             let ready = {
                 let mut s = d.borrow_mut();
                 s.preloading.retain(|p| *p != source);
                 match result {
                     // Dropped if the blur settings changed while it was being prepared.
-                    Ok(Ok(p)) if s.generation == generation && p.baked_with == s.blur() => {
+                    Ok(Ok(p)) if s.generation == generation && p.baked_with == s.blur() && s.screen == screen => {
                         s.preloaded.retain(|q| q.source != p.source);
                         s.preloaded.push(p);
                         true
@@ -1362,6 +1392,51 @@ fn show_in_files(d: &Shared) {
 }
 
 /// Largest current monitor mode in physical pixels, so pre-scaled images stay sharp.
+/// Monitors came, went or changed mode. Asks Mutter for the new sizes
+/// without blocking (a burst of signals asks once, after it settles), then
+/// drops what was prepared for the old size and prepares the wallpaper on
+/// screen again; it stays up until the new one is ready.
+fn monitors_changed(d: &Shared, conn: gio::DBusConnection) {
+    let query = {
+        let mut s = d.borrow_mut();
+        s.screen_query += 1;
+        s.screen_query
+    };
+    let d = d.clone();
+    glib::spawn_future_local(async move {
+        glib::timeout_future(Duration::from_millis(250)).await;
+        if d.borrow().screen_query != query {
+            return;
+        }
+        let reply = conn
+            .call_future(
+                Some("org.gnome.Mutter.DisplayConfig"),
+                "/org/gnome/Mutter/DisplayConfig",
+                "org.gnome.Mutter.DisplayConfig",
+                "GetCurrentState",
+                None,
+                None,
+                gio::DBusCallFlags::NONE,
+                2000,
+            )
+            .await;
+        let screen = reply.map(|r| screen_from(&r)).unwrap_or(FALLBACK_SCREEN);
+        let again = {
+            let mut s = d.borrow_mut();
+            if s.screen_query != query || s.screen == screen {
+                return;
+            }
+            s.screen = screen;
+            s.preloaded.clear();
+            s.current.as_ref().filter(|_| s.media.active.is_none()).map(|c| c.source.clone())
+        };
+        match again {
+            Some(source) => show(&d, source),
+            None => preload(&d),
+        }
+    });
+}
+
 fn query_screen(conn: &gio::DBusConnection) -> (u32, u32) {
     let reply = conn.call_sync(
         Some("org.gnome.Mutter.DisplayConfig"),
@@ -1374,10 +1449,14 @@ fn query_screen(conn: &gio::DBusConnection) -> (u32, u32) {
         2000,
         gio::Cancellable::NONE,
     );
-    let Ok(reply) = reply else { return FALLBACK_SCREEN };
-    let mut best = (0u32, 0u32);
-    let monitors = reply.child_value(1);
-    for m in monitors.iter() {
+    reply.map(|r| screen_from(&r)).unwrap_or(FALLBACK_SCREEN)
+}
+
+/// The size to prepare wallpapers at, from a DisplayConfig.GetCurrentState
+/// reply: big enough for every monitor's current mode.
+fn screen_from(reply: &Variant) -> (u32, u32) {
+    let mut modes = Vec::new();
+    for m in reply.child_value(1).iter() {
         for mode in m.child_value(1).iter() {
             let current = glib::VariantDict::new(Some(&mode.child_value(6)))
                 .lookup_value("is-current", None)
@@ -1386,16 +1465,23 @@ fn query_screen(conn: &gio::DBusConnection) -> (u32, u32) {
             if current {
                 let w = mode.child_value(1).get::<i32>().unwrap_or(0).max(0) as u32;
                 let h = mode.child_value(2).get::<i32>().unwrap_or(0).max(0) as u32;
-                if w * h > best.0 * best.1 {
-                    best = (w, h);
-                }
+                modes.push((w, h));
             }
         }
     }
-    if best.0 == 0 {
+    screen_for(&modes)
+}
+
+/// The widest width and the tallest height of `modes`: a landscape and a
+/// portrait monitor each need their own side covered, which the single
+/// largest monitor doesn't do.
+fn screen_for(modes: &[(u32, u32)]) -> (u32, u32) {
+    let w = modes.iter().map(|m| m.0).max().unwrap_or(0);
+    let h = modes.iter().map(|m| m.1).max().unwrap_or(0);
+    if w == 0 || h == 0 {
         FALLBACK_SCREEN
     } else {
-        best
+        (w, h)
     }
 }
 
@@ -1449,8 +1535,8 @@ impl Daemon {
     /// The blur the extension shows, if any surface uses the baked one.
     fn blur(&self) -> Option<Blur> {
         let s = &self.settings;
-        (s.boolean("blur-overview") || s.boolean("blur-panel"))
-            .then(|| Blur::new(s.uint("blur-strength"), s.double("blur-brightness")))
+        let users = ["blur-overview", "blur-panel", "blur-popups"].map(|k| s.boolean(k));
+        baked_blur(users, s.uint("blur-strength"), s.double("blur-brightness"))
     }
 
     /// Generated files that are on screen or about to be: the cache keeps them.
@@ -1463,5 +1549,26 @@ impl Daemon {
             .flatten()
             .cloned()
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn screen_covers_every_monitor() {
+        assert_eq!(screen_for(&[]), FALLBACK_SCREEN);
+        assert_eq!(screen_for(&[(1920, 1080)]), (1920, 1080));
+        // A landscape 4K beside a portrait 1440p: each side from its tallest.
+        assert_eq!(screen_for(&[(3840, 2160), (1440, 2560)]), (3840, 2560));
+    }
+
+    #[test]
+    fn popups_alone_want_the_baked_blur() {
+        assert!(baked_blur([false, false, false], 60, 0.6).is_none());
+        for users in [[true, false, false], [false, true, false], [false, false, true]] {
+            assert_eq!(baked_blur(users, 60, 0.6), Some(Blur::new(60, 0.6)));
+        }
     }
 }

@@ -41,6 +41,8 @@ export class BlurLayers {
         // Holds the GPU-blurred actors that surfaces clone; never shown itself.
         this._holder = new Clutter.Actor({name: 'wallslaed-blur-sources', visible: false});
         Main.layoutManager.uiGroup.add_child(this._holder);
+        // GNOME destroys its own actors first when the shell shuts down.
+        this._holder.connect('destroy', () => (this._holderGone = true));
         this._overview = null; // {group, layers: [Layer]}
         this._panel = null; // {wrapper, layer}
         this._signals = [];
@@ -55,7 +57,7 @@ export class BlurLayers {
                 // stand-in has to follow the settings here.
                 if (this._source?.gpu)
                     this._load(true);
-            } else if (key === 'blur-overview' || key === 'blur-panel' || key === 'blur-dash') {
+            } else if (['blur-overview', 'blur-panel', 'blur-dash', 'blur-popups'].includes(key)) {
                 this._sync();
             }
         });
@@ -64,8 +66,10 @@ export class BlurLayers {
         this._sync();
     }
 
+    // Popups use the baked blur too (bare desktop, light power level), so
+    // keep it loaded for them even with no overview or top bar blur.
     get _wanted() {
-        return this._settings.get_boolean('blur-overview') || this._settings.get_boolean('blur-panel');
+        return ['blur-overview', 'blur-panel', 'blur-popups'].some(k => this._settings.get_boolean(k));
     }
 
     _sync() {
@@ -165,6 +169,9 @@ export class BlurLayers {
 
     _apply(makeBackground) {
         this._contents.forEach(entry => entry.retire());
+        this._contents = [];
+        if (this._holderGone)
+            return;
         this._contents = Main.layoutManager.monitors.map((monitor, index) => {
             const content = Meta.BackgroundContent.new(global.display, index);
             content.background = makeBackground();
@@ -284,7 +291,8 @@ export class BlurLayers {
         this._signals = [];
         this._destroySurfaces();
         this._clearSource();
-        this._holder.destroy();
+        if (!this._holderGone)
+            this._holder.destroy();
         Main.uiGroup.remove_style_class_name(DASH_CLASS);
         this._background = null;
     }
