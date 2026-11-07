@@ -77,6 +77,10 @@ const CATEGORY_KEYS = {popups: 'blur-popups', folders: 'blur-app-folders', scree
 const ACTIVE_US = 300 * 1000;
 // The brightness the stylesheet's tints are made for.
 const STYLESHEET_BRIGHTNESS = 0.6;
+// After enabling (every unlock too), and between menus, when top bar menus
+// get their blur styling ahead of the first open.
+const PRESTYLE_DELAY_MS = 1500;
+const PRESTYLE_GAP_MS = 500;
 
 export class LiveBlur {
     constructor(settings, injections, layers, power) {
@@ -88,6 +92,9 @@ export class LiveBlur {
         // open: building a blur (and restyling the menu for it) on every open
         // is most of what opening costs us.
         this._kept = new Map(); // target -> Blur
+        // Top bar menus styled ahead, at an idle moment (_prestyle).
+        this._prestyled = new Set();
+        this._prestyleId = 0;
         this._signals = [];
         this._frameIds = []; // stage signals, while any blur is up
         this._activeUntil = 0; // monotonic µs
@@ -200,7 +207,69 @@ export class LiveBlur {
         this._signals.push([theme, theme.connect('changed', () => {
             for (const blur of [...this._kept.values()])
                 blur.destroy();
+            this._unprestyle();
+            this._schedulePrestyle();
         })]);
+        this._popupsOn = popups;
+        this._signals.push([settings, settings.connect('changed::blur-popups', () => this._resyncPrestyle())]);
+        if (power)
+            this._signals.push([power, power.connect('changed', () => this._resyncPrestyle())]);
+        this._schedulePrestyle();
+    }
+
+    // GNOME styles its top bar menus while they are hidden. Giving one our
+    // clear background when it opens restyles all of it again, in the
+    // middle of the click: 25 ms for the calendar in Power Saver. So each
+    // menu gets it ahead, one at a time while nothing is happening, and is
+    // measured there so the styling is done before the first open.
+    _schedulePrestyle() {
+        if (this._prestyleId || this._destroyed)
+            return;
+        const step = () => {
+            const next = this._popupsOn() && this._prestyleTargets()
+                .find(t => !this._prestyled.has(t) && !t._wallslaedSurface);
+            if (!next) {
+                this._prestyleId = 0;
+                return;
+            }
+            setTint(next, this._look(), this._expectBaked());
+            this._prestyled.add(next);
+            next.get_preferred_height(-1);
+            this._prestyleId = GLib.timeout_add(GLib.PRIORITY_LOW, PRESTYLE_GAP_MS, () => {
+                step();
+                return GLib.SOURCE_REMOVE;
+            });
+        };
+        this._prestyleId = GLib.timeout_add(GLib.PRIORITY_LOW, PRESTYLE_DELAY_MS, () => {
+            step();
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
+    // Quick Settings and the calendar first: the menus opened most.
+    _prestyleTargets() {
+        const first = ['quickSettings', 'dateMenu']
+            .map(name => Main.panel.statusArea[name]?.menu?._boxPointer ?? Main.panel.statusArea[name]?.menu?.actor);
+        return [...new Set([...first, ...panelBoxes()])]
+            .filter(box => box instanceof BoxPointer.BoxPointer && !box.mapped)
+            .map(box => box.bin.get_child() ?? box.bin);
+    }
+
+    // Undo it for menus with no blur (closed, never opened).
+    _unprestyle() {
+        for (const target of this._prestyled) {
+            if (!this._blurs.has(target) && !this._kept.has(target))
+                unstyle(target);
+        }
+        this._prestyled.clear();
+    }
+
+    _resyncPrestyle() {
+        if (this._popupsOn()) {
+            this._schedulePrestyle();
+        } else {
+            this._unprestyle();
+        }
     }
 
     _all() {
@@ -359,8 +428,7 @@ export class LiveBlur {
         }
         // Only the top bar's menus are kept: a fixed handful, each reopened
         // often. Other popups come and go, and keeping theirs would grow.
-        const keep = category === 'popups' &&
-            Object.values(Main.panel.statusArea).some(button => button?.menu?.actor === root);
+        const keep = category === 'popups' && panelBoxes().includes(root);
         const blur = new Blur(category, root, target, this._look(), {
             keep,
             destroyed: b => {
@@ -389,6 +457,10 @@ export class LiveBlur {
 
     destroy() {
         this._destroyed = true;
+        if (this._prestyleId)
+            GLib.source_remove(this._prestyleId);
+        this._prestyleId = 0;
+        this._unprestyle();
         for (const [obj, id] of this._signals)
             obj.disconnect(id);
         this._signals = [];
@@ -398,6 +470,14 @@ export class LiveBlur {
         this._kept.clear();
         this._syncFrameHook();
     }
+}
+
+// The BoxPointers the top bar's menus open in. Quick Settings' menu has
+// another actor as its `actor`; its BoxPointer is `_boxPointer`.
+function panelBoxes() {
+    return Object.values(Main.panel.statusArea)
+        .map(button => button?.menu?._boxPointer ?? button?.menu?.actor)
+        .filter(box => box instanceof BoxPointer.BoxPointer);
 }
 
 function extentsOf(actor) {

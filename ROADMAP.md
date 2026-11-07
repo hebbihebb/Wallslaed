@@ -29,6 +29,17 @@ The port itself moved to `CURRENT_TASKS.md` (`fix/gnome-51`). Still open:
 
 Locking the screen disables the extension (no `unlock-dialog` session mode), which stops the player; it resumes from the saved position on unlock. Find out what `unlock-dialog` support would take, and whether the extensions.gnome.org review rules allow it for this kind of extension.
 
+### Performance ideas left over from the 2026 rendering investigation
+
+Measured or prototyped on `fix/perf-deep-dive`; none was good enough, or safe enough, to ship as it stands.
+
+- **A popup blur that keeps its buffers.** GNOME's blur effect makes three new framebuffers for every repaint whose source changed. A prototype (a JS `Clutter.Effect` drawing through `Clutter.LayerNode.new_to_framebuffer` into buffers it keeps) cut that to almost none: hover p99 halved, shell CPU while hovering about 17% lower, and the look matched in screenshots. It is not built in: it replaces a GNOME-maintained effect with our own shader. Better fixed upstream, in `ShellBlurEffect` / `ClutterBlurNode`.
+- **Heavy transitions' first use.** Burn, Freeze and Shatter still cost one 50-100 ms frame the first time their shader is used in a session: now a hidden warm-up frame a few seconds after a change, no longer the visible one. Bounding the shader loops by a uniform (no unrolling) made no measurable difference. Left to try: replacing their noise and shard searches with small precomputed textures (needs a second texture on both GNOME 50's and 51's effect classes).
+- **Video frames straight to GL.** Wrapping the GTK sink in `glsinkbin` makes NVDEC frames arrive as GL textures instead of system memory, but cost more CPU on NVIDIA (player 13.5% -> 16%, shell 7% -> 9%, 1080p30). Worth measuring again on VA-API and on newer GStreamer.
+- **Pictures changed outside Wallslæd.** A wallpaper file rewritten in place isn't reloaded, and a picture set from outside keeps Wallslæd's old baked blur. A fix must not race the daemon's own background writes.
+- **Colour fidelity of prepared pictures:** ICC profiles, CMYK, HDR and alpha are not carried into the prepared JPEG; decide what is supported.
+- **A persistent wallpaper presenter** (one background actor per monitor, no GNOME `Background` per change): fewer actors and settings writes per change, but a large change with its own risks.
+
 ## Not yet exercised
 
 - The desktop menu under rapid real clicks (exercised only programmatically in a headless shell, 2026-10-25).
