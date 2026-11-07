@@ -49,17 +49,31 @@ pub struct Options {
     pub start: f64,
     pub title: Option<String>,
     pub art: Option<String>,
+    /// Applied before the first frame plays, so no buffer goes out louder.
+    pub volume: f64,
+    /// Start paused (nobody can see it yet).
+    pub paused: bool,
 }
 
 impl Options {
     fn parse(mut args: impl Iterator<Item = String>) -> Option<Options> {
-        let mut o = Options { file: String::new(), audio: false, start: 0.0, title: None, art: None };
+        let mut o = Options {
+            file: String::new(),
+            audio: false,
+            start: 0.0,
+            title: None,
+            art: None,
+            volume: 1.0,
+            paused: false,
+        };
         while let Some(arg) = args.next() {
             match arg.as_str() {
                 "--audio" => o.audio = true,
                 "--start" => o.start = args.next()?.parse().ok()?,
                 "--title" => o.title = args.next(),
                 "--art" => o.art = args.next(),
+                "--volume" => o.volume = args.next()?.parse::<f64>().ok()?.clamp(0.0, 1.0),
+                "--paused" => o.paused = true,
                 _ if o.file.is_empty() => o.file = arg,
                 _ => return None,
             }
@@ -170,10 +184,13 @@ thread_local! {
 
 fn main() -> glib::ExitCode {
     let Some(opts) = Options::parse(std::env::args().skip(1)) else {
-        eprintln!("usage: wallslaed-player <file> [--audio] [--start <secs>] [--title <t>] [--art <jpg>]");
+        eprintln!(
+            "usage: wallslaed-player <file> [--audio] [--start <secs>] [--title <t>] [--art <jpg>] \
+             [--volume <0..1>] [--paused]"
+        );
         return glib::ExitCode::FAILURE;
     };
-    match compositor_gpu_vendor() {
+    match compositor_gpu_vendor_bounded() {
         Some(NVIDIA) => {
             // Decode with NVDEC on the same GPU. GTK's GL renderer imports those
             // frames more cheaply than the Vulkan one on NVIDIA.
@@ -197,7 +214,11 @@ fn main() -> glib::ExitCode {
             if line == "quit" {
                 break;
             }
-            ctx.invoke(move || command(&line));
+            // spawn, not invoke: invoke runs the closure right here, on this
+            // thread, while the main thread doesn't own the context yet
+            // (during GTK setup), and the command would be lost in this
+            // thread's own queue.
+            ctx.spawn(async move { command(&line) });
         }
         // Leave even if the main loop is stuck, so the extension never has to
         // kill us; the grace period lets a music video save its position.
@@ -237,15 +258,16 @@ fn main() -> glib::ExitCode {
         window.present();
         windows.push(window);
     }
-    backend.set_playing(true);
+    backend.set_volume(opts.volume);
+    backend.set_playing(!opts.paused);
     PLAYBACK.with(|p| {
         *p.borrow_mut() = Some(Playback {
             backend,
             file: opts.file.clone(),
             audio: opts.audio,
-            playing: true,
+            playing: !opts.paused,
             muted: !opts.audio,
-            volume: 1.0,
+            volume: opts.volume,
         })
     });
     report_state();
@@ -383,6 +405,18 @@ const NVIDIA: u32 = 0x10de;
 
 /// PCI vendor of the GPU Mutter composites on. Like Mutter, prefer the GPU that
 /// drives the built-in panel, then any GPU with a connected display.
+/// compositor_gpu_vendor(), given at most half a second. It reads sysfs
+/// before anything listens to stdin; a read that hangs (a GPU driver stuck
+/// in a reset) must not keep us from hearing `quit`. Late, it counts as
+/// unknown, and the thread is left to finish or not.
+fn compositor_gpu_vendor_bounded() -> Option<u32> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(compositor_gpu_vendor());
+    });
+    rx.recv_timeout(std::time::Duration::from_millis(500)).ok().flatten()
+}
+
 fn compositor_gpu_vendor() -> Option<u32> {
     let mut fallback = None;
     for entry in std::fs::read_dir("/sys/class/drm").ok()?.flatten() {
@@ -412,7 +446,8 @@ fn prefer_integrated_gpu() {
     if let Ok(existing) = std::env::var("GST_PLUGIN_FEATURE_RANK") {
         ranks.push(existing);
     }
-    // Single-threaded at this point, before GTK or GStreamer start.
+    // Before GTK or GStreamer start; only the vendor probe (sysfs reads,
+    // no environment) may still be running.
     // A global LIBVA_DRIVER_NAME=nvidia would stop VA-API from using the iGPU.
     std::env::remove_var("LIBVA_DRIVER_NAME");
     std::env::set_var("GST_PLUGIN_FEATURE_RANK", ranks.join(","));

@@ -14,7 +14,10 @@ const STATE_PAUSED: c_int = 3;
 const STATE_PLAYING: c_int = 4;
 const MESSAGE_EOS: c_int = 1 << 0;
 const MESSAGE_ERROR: c_int = 1 << 1;
+const MESSAGE_APPLICATION: c_int = 1 << 14;
 const MESSAGE_ASYNC_DONE: c_int = 1 << 21;
+/// The application message Drop posts to end the bus thread.
+const STOP: &CStr = c"wallslaed-stop";
 const FORMAT_TIME: c_int = 3;
 const SEEK_FLUSH: c_int = 1 << 0;
 const SEEK_ACCURATE: c_int = 1 << 1;
@@ -34,10 +37,18 @@ extern "C" {
     fn gst_element_query_position(element: *mut c_void, format: c_int, cur: *mut i64) -> c_int;
     fn gst_element_query_duration(element: *mut c_void, format: c_int, dur: *mut i64) -> c_int;
     fn gst_structure_get_name(structure: *const c_void) -> *const c_char;
+    fn gst_structure_new_empty(name: *const c_char) -> *mut c_void;
+    fn gst_message_new_application(src: *mut c_void, structure: *mut c_void) -> *mut c_void;
+    fn gst_bus_post(bus: *mut c_void, message: *mut c_void) -> c_int;
+    fn gst_element_get_static_pad(element: *mut c_void, name: *const c_char) -> *mut c_void;
+    fn gst_pad_get_current_caps(pad: *mut c_void) -> *mut c_void;
+    fn gst_caps_to_string(caps: *const c_void) -> *mut c_char;
 }
 
 pub struct Player {
     pipeline: glib::Object,
+    /// Our own reference, to tell the bus thread to stop.
+    bus: SendPtr,
 }
 
 struct SendPtr(*mut c_void);
@@ -62,6 +73,11 @@ impl Player {
             }
         }
         let sink = make("gtk4paintablesink").ok_or("gtk4paintablesink not installed")?;
+        let paintable = sink.property::<gdk::Paintable>("paintable");
+        // Not wrapped in glsinkbin: that makes NVDEC frames arrive as GL
+        // textures instead of system memory, but measured on NVIDIA it cost
+        // more, not less (player 13.5 -> 16% CPU, shell 7 -> 9%, 1080p30).
+        // The negotiated caps are logged (log_caps) to check other setups.
         let pipeline = make("playbin3")
             .or_else(|| make("playbin"))
             .ok_or("playbin not available")?;
@@ -82,17 +98,23 @@ impl Player {
         pipeline.set_property_from_value("flags", &flags);
         pipeline.set_property("uri", uri);
         pipeline.set_property("video-sink", &sink);
-        let paintable = sink.property::<gdk::Paintable>("paintable");
 
         // Loop on end-of-stream; exit on errors so the extension falls back to
         // the still frame. The start position can only be sought once the
         // pipeline has prerolled, which the first async-done message signals.
-        let element = SendPtr(pipeline.as_ptr() as *mut c_void);
+        //
+        // The thread holds its own references to the pipeline and the sink,
+        // so neither can be freed while it seeks; Drop ends it with a STOP
+        // message instead of leaving it waiting on a pipeline that's gone.
+        let element = SendPtr(unsafe { glib::gobject_ffi::g_object_ref(pipeline.as_ptr()) } as *mut c_void);
+        let sink_ref = SendPtr(unsafe { glib::gobject_ffi::g_object_ref(sink.as_ptr()) } as *mut c_void);
         let bus = SendPtr(unsafe { gst_element_get_bus(element.0) });
+        let own_bus = SendPtr(unsafe { gst_element_get_bus(element.0) });
         let mut start = (start > 0.0).then(|| (start * 1e9) as i64);
+        let mut caps_logged = false;
         std::thread::spawn(move || {
-            let (element, bus) = (element, bus);
-            let types = MESSAGE_EOS | MESSAGE_ERROR | MESSAGE_ASYNC_DONE;
+            let (element, bus, sink) = (element, bus, sink_ref);
+            let types = MESSAGE_EOS | MESSAGE_ERROR | MESSAGE_ASYNC_DONE | MESSAGE_APPLICATION;
             loop {
                 let msg = unsafe { gst_bus_timed_pop_filtered(bus.0, CLOCK_TIME_NONE, types) };
                 if msg.is_null() {
@@ -104,12 +126,20 @@ impl Player {
                     (!st.is_null()).then(|| CStr::from_ptr(gst_structure_get_name(st)).to_bytes().to_vec())
                 };
                 unsafe { gst_mini_object_unref(msg) };
+                if name.as_deref() == Some(STOP.to_bytes()) {
+                    break;
+                }
+                if name.as_deref() == Some(b"GstMessageAsyncDone") && !caps_logged {
+                    caps_logged = true;
+                    log_caps(sink.0);
+                }
                 let pos = match name.as_deref() {
                     None => 0,
                     Some(b"GstMessageAsyncDone") => match start.take() {
                         Some(pos) => pos,
                         None => continue,
                     },
+                    Some(n) if n != b"GstMessageError" => continue,
                     Some(_) => {
                         eprintln!("wallslaed-player: playback error");
                         std::process::exit(1);
@@ -117,10 +147,14 @@ impl Player {
                 };
                 unsafe { gst_element_seek_simple(element.0, FORMAT_TIME, SEEK_FLUSH | SEEK_KEY_UNIT, pos) };
             }
-            unsafe { gst_object_unref(bus.0) };
+            unsafe {
+                gst_object_unref(bus.0);
+                gst_object_unref(sink.0);
+                gst_object_unref(element.0);
+            }
         });
 
-        Ok((Player { pipeline }, paintable))
+        Ok((Player { pipeline, bus: own_bus }, paintable))
     }
 
     pub fn set_playing(&self, playing: bool) {
@@ -162,8 +196,36 @@ impl Player {
     }
 }
 
+/// Says which memory decoded frames reach the sink in (system memory, GL
+/// textures or DMA-BUFs), once, for the logs.
+fn log_caps(sink: *mut c_void) {
+    unsafe {
+        let pad = gst_element_get_static_pad(sink, c"sink".as_ptr());
+        if pad.is_null() {
+            return;
+        }
+        let caps = gst_pad_get_current_caps(pad);
+        if !caps.is_null() {
+            let text = gst_caps_to_string(caps);
+            if !text.is_null() {
+                eprintln!("wallslaed-player: video caps {}", CStr::from_ptr(text).to_string_lossy());
+                glib::ffi::g_free(text as *mut c_void);
+            }
+            gst_mini_object_unref(caps);
+        }
+        gst_object_unref(pad);
+    }
+}
+
 impl Drop for Player {
     fn drop(&mut self) {
-        unsafe { gst_element_set_state(self.as_ptr(), STATE_NULL) };
+        unsafe {
+            // Before NULL: a pipeline going to NULL flushes its bus, and the
+            // message would be dropped.
+            let stop = gst_message_new_application(ptr::null_mut(), gst_structure_new_empty(STOP.as_ptr()));
+            gst_bus_post(self.bus.0, stop);
+            gst_object_unref(self.bus.0);
+            gst_element_set_state(self.as_ptr(), STATE_NULL);
+        }
     }
 }

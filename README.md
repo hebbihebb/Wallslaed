@@ -134,7 +134,7 @@ Most of Wallslæd costs about nothing, measured: the blur on the top bar, dash a
 
 - **Wallpaper only:** menus and popups show the wallpaper frosted instead of blurring the windows behind them. It looks almost the same and costs nothing per frame.
 - **Light effects only:** Random picks from Crossfade, Zoom, Pixelate, Ripple and Light Leak, and any other effect plays as a crossfade.
-- **Still frame:** animated wallpapers pause. Music videos keep playing.
+- **Still frame:** animated wallpapers show a still frame, and the video player stops after ten seconds, so it holds no memory (a quick switch back and forth keeps it). Music videos keep playing.
 
 Change any of these on the **Power** page in the settings (each can also be Off), or switch **Follow the Power Mode** off. A power mode only ever turns things down: anything you switched off on the other pages stays off. While effects are lighter, the Quick Settings tile says so, for example *Power Saver: lighter effects*. Without a power mode service (power-profiles-daemon or tuned-ppd), everything stays as set.
 

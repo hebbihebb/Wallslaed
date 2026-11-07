@@ -16,6 +16,8 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as Signals from 'resource:///org/gnome/shell/misc/signals.js';
 
 const TITLE_PREFIX = 'wallslaed-player-';
+// How long a player paused by a lighter power level stays before it quits.
+const POWER_STOP_DELAY_S = 10;
 
 const UPowerIface = `
 <node>
@@ -44,6 +46,7 @@ export class AnimatedHost extends Signals.EventEmitter {
         this._bgSignals = [];
         this._signals = [];
         this._checkId = 0;
+        this._powerStopId = 0;
         this._paused = false;
         this._cancellable = new Gio.Cancellable();
         this._playerPath = undefined; // undefined: still looking
@@ -53,7 +56,10 @@ export class AnimatedHost extends Signals.EventEmitter {
         const check = () => this._queueCheck();
 
         on(daemon, 'changed', () => this._sync());
-        on(power, 'changed', check);
+        on(power, 'changed', () => {
+            this._sync();
+            check();
+        });
         on(settings, 'changed', (_s, key) => {
             if (key === 'animated-enabled')
                 this._sync();
@@ -117,12 +123,42 @@ export class AnimatedHost extends Signals.EventEmitter {
 
     _sync() {
         const state = this._daemon.state;
+        const animated = state?.animated && state.playable && this._settings.get_boolean('animated-enabled');
+        if (animated && this._lowPower() && this._player?.file === state.playable && !this._player.audio) {
+            if (!this._powerStopId)
+                this._stopForPower();
+            return;
+        }
+        this._cancelPowerStop();
         if (state?.audio && state.playable)
             this._start(state.playable, state);
-        else if (state?.animated && state.playable && this._settings.get_boolean('animated-enabled'))
+        else if (animated && !this._lowPower())
             this._start(state.playable, null);
         else
-            this._stop();
+            this._stop(); // a still frame: the daemon's poster shows instead
+    }
+
+    // A lighter power level shows the still frame, which the daemon already
+    // made: no player, decoder or GPU context at all. One already running is
+    // paused right away and only quits after a while, so flipping between
+    // power modes doesn't restart it each time.
+    _lowPower() {
+        return this._power.level('animated') !== 'full';
+    }
+
+    _stopForPower() {
+        this._powerStopId = GLib.timeout_add_seconds(GLib.PRIORITY_LOW, POWER_STOP_DELAY_S, () => {
+            this._powerStopId = 0;
+            if (this._player && !this._player.audio && this._lowPower())
+                this._stop();
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
+    _cancelPowerStop() {
+        if (this._powerStopId)
+            GLib.source_remove(this._powerStopId);
+        this._powerStopId = 0;
     }
 
     _restart() {
@@ -150,7 +186,13 @@ export class AnimatedHost extends Signals.EventEmitter {
                 argv.push('--title', media['media-title']);
             if (media['media-art'])
                 argv.push('--art', media['media-art']);
+            // Before the first buffer plays, not after it.
+            argv.push('--volume', String(this._settings.get_double('music-volume')));
         }
+        // Paused from the first frame if nobody would see it play.
+        const paused = !audio && this._wantPause(this._coveredMonitors());
+        if (paused)
+            argv.push('--paused');
 
         const launcher = new Gio.SubprocessLauncher({
             flags: Gio.SubprocessFlags.STDIN_PIPE | Gio.SubprocessFlags.STDOUT_PIPE,
@@ -175,7 +217,7 @@ export class AnimatedHost extends Signals.EventEmitter {
             windowSignals: [],
         };
         this._player = player;
-        this._paused = false;
+        this._paused = paused;
         proc.wait_async(null, (p, res) => {
             try {
                 p.wait_finish(res);
@@ -198,7 +240,6 @@ export class AnimatedHost extends Signals.EventEmitter {
         this._readState(player, new Gio.DataInputStream({base_stream: proc.get_stdout_pipe()}));
         if (audio) {
             this.media = {playing: true, muted: false};
-            this._sendVolume();
             this.emit('media-changed');
         }
         this._watchBackgrounds();
@@ -411,17 +452,20 @@ export class AnimatedHost extends Signals.EventEmitter {
         // Music videos keep playing behind windows; the user pauses them.
         if (this._player.audio)
             return;
-        const onBattery = this._settings.get_boolean('animated-pause-on-battery') &&
-            this._upower?.OnBattery === true;
-        const covered = this._settings.get_boolean('animated-pause-when-covered') &&
-            monitors.every(Boolean);
-        // A lighter power level shows a still frame.
-        const lowPower = this._power.level('animated') !== 'full';
-        const pause = onBattery || covered || lowPower;
+        const pause = this._wantPause(monitors);
         if (pause !== this._paused) {
             this._paused = pause;
             this._send(this._player, pause ? 'pause' : 'play');
         }
+    }
+
+    _wantPause(monitors) {
+        const onBattery = this._settings.get_boolean('animated-pause-on-battery') &&
+            this._upower?.OnBattery === true;
+        const covered = this._settings.get_boolean('animated-pause-when-covered') &&
+            monitors.every(Boolean);
+        // A lighter power level shows a still frame (and soon stops the player).
+        return onBattery || covered || this._lowPower();
     }
 
     // Per monitor: whether a maximized or fullscreen window on the active
@@ -445,6 +489,7 @@ export class AnimatedHost extends Signals.EventEmitter {
         if (this._checkId)
             GLib.source_remove(this._checkId);
         this._checkId = 0;
+        this._cancelPowerStop();
         this._stop();
         this._retiring.clear();
         for (const [obj, id] of this._signals)
