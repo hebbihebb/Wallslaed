@@ -33,7 +33,7 @@ const LeanBackground = GObject.registerClass({
     Signals: {'loaded': {}, 'bg-changed': {}},
 }, class LeanBackground extends Meta.Background {
     // `settings` and `interfaceSettings` belong to GNOME's BackgroundSource;
-    // `take(file)` gives a prepared texture, or null.
+    // `take(file, cancellable)` gives a prepared texture, or null.
     _init({file, style, settings, interfaceSettings, take}) {
         super._init({meta_display: global.display});
         this.isLoaded = false;
@@ -95,7 +95,7 @@ const LeanBackground = GObject.registerClass({
 
     async _load(take) {
         try {
-            const entry = await take(this._file);
+            const entry = await take(this._file, this._cancellable);
             if (this._cancellable.is_cancelled())
                 return;
             if (entry?.texture)
@@ -169,7 +169,7 @@ export class LeanBackgrounds {
             style,
             settings,
             interfaceSettings: source._interfaceSettings,
-            take: f => this._preloader()?.take(f) ?? Promise.resolve(null),
+            take: (f, c) => this._preloader()?.take(f, c) ?? Promise.resolve(null),
         });
         // As GNOME's: dropped from the source when it changes.
         background._changedId = background.connect('bg-changed', () => {

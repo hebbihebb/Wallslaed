@@ -34,6 +34,10 @@ Gio._promisify(Gio.File.prototype, 'query_info_async');
 const ROWS = 16;
 const BURST_MS = 2;
 const INTERVAL_MS = 8;
+// Pictures loaded on demand (not announced by the daemon) at most at once. A
+// source that stalls (a network mount, a decoder that hangs) otherwise piles
+// up one load per wallpaper change; the oldest goes first.
+const MAX_DEMANDED = 2;
 
 // The memory formats GNOME 51 accepts from glycin, and their Cogl formats.
 const M = Glycin.MemoryFormat;
@@ -93,7 +97,7 @@ export class Preloader {
         const self = this;
         this._injections.overrideMethod(Object.getPrototypeOf(background), '_loadImage',
             original => async function (file) {
-                const entry = await self._take(file);
+                const entry = await self._take(file, this._cancellable);
                 if (!entry)
                     return original.call(this, file);
                 // As GNOME's own _loadImage does with a texture from its cache.
@@ -105,21 +109,46 @@ export class Preloader {
             });
     }
 
-    /** The prepared texture for `file` ({texture, colorState}), or null. */
-    take(file) {
-        return this._take(file);
+    /**
+     * The prepared texture for `file` ({texture, colorState}), or null.
+     * Cancelling `cancellable` (the background asking is gone) lets go of
+     * it, and a load nobody else waits for stops.
+     */
+    take(file, cancellable = null) {
+        return this._take(file, cancellable);
     }
 
     // The finished texture for `file`, or null to let GNOME load it.
-    async _take(file) {
+    async _take(file, cancellable = null) {
         const uri = file.get_uri();
         let entry = this._entries.get(uri);
         if (!entry) {
             // Not prepared: load it now, without waiting for transitions.
+            const wanted = this._wanted();
+            const old = [...this._entries].filter(([key, e]) => e.demanded && !wanted.has(key));
+            while (old.length >= MAX_DEMANDED)
+                this._drop(old.shift()[0]);
             entry = new Entry(file, () => false);
             entry.demanded = true;
             this._entries.set(uri, entry);
         }
+        entry.waiting++;
+        let waiting = true;
+        const release = () => {
+            if (waiting)
+                entry.waiting--;
+            waiting = false;
+        };
+        let cancelId = 0;
+        const letGo = () => {
+            release();
+            if (!entry.waiting && entry.demanded && this._entries.get(uri) === entry && !this._wanted().has(uri))
+                this._drop(uri);
+        };
+        if (cancellable?.is_cancelled())
+            letGo();
+        else if (cancellable)
+            cancelId = cancellable.connect(letGo); // g_cancellable_connect
         try {
             await entry.ready;
             // Rewritten since it was prepared (GNOME reloads on file changes).
@@ -141,6 +170,10 @@ export class Preloader {
             if (this._entries.get(uri) === entry)
                 this._drop(uri);
             return null;
+        } finally {
+            release();
+            if (cancelId)
+                cancellable.disconnect(cancelId);
         }
     }
 
@@ -188,6 +221,7 @@ class Entry {
         this.texture = null;
         // Asked for by GNOME and still loading: kept until it is handed over.
         this.demanded = false;
+        this.waiting = 0; // backgrounds awaiting it (Preloader._take)
         this.colorState = null;
         this.etag = null;
         this._busy = busy;
