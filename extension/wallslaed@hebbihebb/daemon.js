@@ -16,6 +16,9 @@ export class DaemonClient extends Signals.EventEmitter {
     constructor() {
         super();
         this.state = null;
+        // Bumped by every newer state (a Changed signal, a new or lost
+        // owner), so a GetState reply that was overtaken is dropped.
+        this._generation = 0;
         this._proxy = new WallslaedProxy(
             Gio.DBus.session, BUS_NAME, OBJECT_PATH,
             (proxy, error) => {
@@ -26,7 +29,10 @@ export class DaemonClient extends Signals.EventEmitter {
             },
             null, Gio.DBusProxyFlags.DO_NOT_AUTO_START);
         this._signalId = this._proxy.connectSignal('Changed',
-            (_proxy, _sender, [state]) => this._set(unpack(state)));
+            (_proxy, _sender, [state]) => {
+                this._generation++;
+                this._set(unpack(state));
+            });
         this._ownerId = this._proxy.connect('notify::g-name-owner', () => this._refresh());
     }
 
@@ -35,13 +41,15 @@ export class DaemonClient extends Signals.EventEmitter {
     }
 
     async _refresh() {
+        const generation = ++this._generation;
         if (!this.running) {
             this._set(null);
             return;
         }
         try {
-            const [state] = await this._proxy.GetStateAsync();
-            if (this._proxy)
+            const proxy = this._proxy;
+            const [state] = await proxy.GetStateAsync();
+            if (this._proxy === proxy && generation === this._generation)
                 this._set(unpack(state));
         } catch (e) {
             console.warn(`Wallslæd: GetState failed: ${e.message}`);
