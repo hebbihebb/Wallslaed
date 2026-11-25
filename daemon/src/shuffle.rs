@@ -178,24 +178,57 @@ impl Bag {
     /// each `(old, new)` path's favorite, ban, place in the cycle and history
     /// follow it to `new`. Works whether or not a rescan has already noticed
     /// the change, since favorites and bans are never dropped by a scan.
-    /// Returns how many favorites and bans moved.
-    pub fn relink(&mut self, pairs: &[(String, String)]) -> u32 {
+    /// Returns `(moved, changed)`: how many favorites and bans moved, and
+    /// whether any part of the bag changed.
+    pub fn relink(&mut self, pairs: &[(String, String)]) -> (u32, bool) {
         let mut moved = 0;
+        let mut changed = false;
         for (old, new) in pairs {
-            if old == new {
+            if old == new || old.is_empty() || new.is_empty() {
                 continue;
             }
             if self.favorites.remove(old) {
                 self.favorites.insert(new.clone());
                 moved += 1;
+                changed = true;
             }
             if self.banned.remove(old) {
                 self.banned.insert(new.clone());
                 moved += 1;
+                changed = true;
             }
-            for path in self.order.iter_mut().chain(self.history.iter_mut()) {
+            // If an incomplete scan already inserted `new` while `old` stayed
+            // in the cycle, drop the stale non-favorite slot instead of
+            // putting `new` in the cycle twice.
+            let drop_duplicate =
+                !self.favorites.contains(new) && self.order.iter().any(|p| p == new);
+            if drop_duplicate {
+                let mut pos = self.pos;
+                let mut index = 0;
+                self.order.retain(|p| {
+                    let keep = p != old;
+                    if !keep {
+                        changed = true;
+                        if index < pos {
+                            pos -= 1;
+                        }
+                    }
+                    index += 1;
+                    keep
+                });
+                self.pos = pos.min(self.order.len());
+            } else {
+                for path in &mut self.order {
+                    if path == old {
+                        *path = new.clone();
+                        changed = true;
+                    }
+                }
+            }
+            for path in &mut self.history {
                 if path == old {
                     *path = new.clone();
+                    changed = true;
                 }
             }
         }
@@ -206,14 +239,17 @@ impl Bag {
         let mut index = 0;
         self.order.retain(|p| {
             let keep = !banned.contains(p);
-            if !keep && index < pos {
-                pos -= 1;
+            if !keep {
+                changed = true;
+                if index < pos {
+                    pos -= 1;
+                }
             }
             index += 1;
             keep
         });
         self.pos = pos.min(self.order.len());
-        moved
+        (moved, changed)
     }
 
     fn push_history(&mut self, path: String) {
@@ -486,14 +522,46 @@ mod tests {
             (fav.clone(), "/w/fav-upscaled.png".to_string()),
             (banned.clone(), "/w/banned-upscaled.png".to_string()),
         ];
-        assert_eq!(bag.relink(&pairs), 2);
+        assert_eq!(bag.relink(&pairs), (2, true));
         assert!(bag.favorites.contains("/w/fav-upscaled.png") && !bag.favorites.contains(&fav));
         assert!(bag.banned.contains("/w/banned-upscaled.png") && !bag.banned.contains(&banned));
         assert_eq!(bag.current(), Some("/w/fav-upscaled.png"), "history follows");
         // And back again (Undo).
         let back: Vec<_> = pairs.iter().map(|(a, b)| (b.clone(), a.clone())).collect();
-        assert_eq!(bag.relink(&back), 2);
+        assert_eq!(bag.relink(&back), (2, true));
         assert!(bag.favorites.contains(&fav) && bag.banned.contains(&banned));
+    }
+
+    #[test]
+    fn relink_ignores_empty_and_unchanged_and_dedups_partial_scan() {
+        let mut library = lib(10);
+        let mut rng = fastrand::Rng::with_seed(13);
+        let mut bag = Bag::default();
+        bag.sync(&library, true, &mut rng);
+        let target = library[2].clone();
+        bag.favorites.insert(target.clone());
+        assert_eq!(
+            bag.relink(&[
+                (target.clone(), String::new()),
+                (String::new(), "/w/new.png".into()),
+                (target.clone(), target.clone()),
+                ("/w/missing.jpg".into(), "/w/other.png".into()),
+            ]),
+            (0, false)
+        );
+        assert!(bag.favorites.contains(&target));
+
+        // Partial scan added `new` while `old` stayed in the cycle:
+        // relinking a non-favorite drops the duplicate slot.
+        let plain = library[5].clone();
+        library.push("/w/plain-up.png".into());
+        bag.sync(&library, false, &mut rng);
+        assert_eq!(bag.order.iter().filter(|p| *p == &plain).count(), 1);
+        assert_eq!(bag.order.iter().filter(|p| *p == "/w/plain-up.png").count(), 1);
+        assert_eq!(bag.relink(&[(plain.clone(), "/w/plain-up.png".into())]), (0, true));
+        assert_eq!(bag.order.iter().filter(|p| *p == "/w/plain-up.png").count(), 1);
+        assert!(!bag.order.contains(&plain));
+        assert!(bag.pos <= bag.order.len());
     }
 
     // The rescan can win the race: the old path is already gone from the

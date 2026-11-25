@@ -427,9 +427,24 @@ fn handle_method(d: &Shared, method: &str, params: &Variant, inv: gio::DBusMetho
                 .child_value(0)
                 .get::<Vec<(String, String)>>()
                 .unwrap_or_default();
-            let moved = d.borrow_mut().bag.relink(&pairs);
-            save_state(&d.borrow());
-            emit_changed(d);
+            let (moved, bag_changed, state_changed) = {
+                let mut guard = d.borrow_mut();
+                let s = &mut *guard;
+                let (moved, bag_changed) = s.bag.relink(&pairs);
+                let state_changed = relink_daemon_state(
+                    &mut s.current,
+                    &mut s.library,
+                    &mut s.preloaded,
+                    &pairs,
+                );
+                (moved, bag_changed, state_changed)
+            };
+            if bag_changed {
+                save_state(&d.borrow());
+            }
+            if bag_changed || state_changed {
+                emit_changed(d);
+            }
             inv.return_value(Some(&(moved,).to_variant()));
             return;
         }
@@ -1568,9 +1583,61 @@ impl Daemon {
     }
 }
 
+/// Updates in-memory daemon state for `(old, new)` replacements so
+/// `ShowInFiles`, `GetState["current"]`, and `eligible(&library)` follow the
+/// new path immediately without waiting for a rescan, and drops stale
+/// preloaded frames for replaced sources.
+fn relink_daemon_state(
+    current: &mut Option<Prepared>,
+    library: &mut Vec<String>,
+    preloaded: &mut Vec<Prepared>,
+    pairs: &[(String, String)],
+) -> bool {
+    let mut changed = false;
+    for (old, new) in pairs {
+        if old == new || old.is_empty() || new.is_empty() {
+            continue;
+        }
+        if let Some(cur) = current.as_mut() {
+            if cur.source == *old {
+                cur.source = new.clone();
+                changed = true;
+            }
+        }
+        let had_new = library.iter().any(|p| p == new);
+        if had_new {
+            let before = library.len();
+            library.retain(|p| p != old);
+            changed |= library.len() != before;
+        } else {
+            for path in library.iter_mut() {
+                if path == old {
+                    *path = new.clone();
+                    changed = true;
+                }
+            }
+        }
+        let before = preloaded.len();
+        preloaded.retain(|p| p.source != *old);
+        changed |= preloaded.len() != before;
+    }
+    changed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn prepared(source: &str) -> Prepared {
+        Prepared {
+            source: source.to_string(),
+            key: "k".to_string(),
+            picture: None,
+            playable: None,
+            blurred: None,
+            baked_with: None,
+        }
+    }
 
     #[test]
     fn screen_covers_every_monitor() {
@@ -1586,5 +1653,44 @@ mod tests {
         for users in [[true, false, false], [false, true, false], [false, false, true]] {
             assert_eq!(baked_blur(users, 60, 0.6), Some(Blur::new(60, 0.6)));
         }
+    }
+
+    #[test]
+    fn relink_updates_current_library_and_drops_stale_preloaded() {
+        let mut current = Some(prepared("/w/sunset.jpg"));
+        let mut library = vec!["/w/sunset.jpg".into(), "/w/other.jpg".into()];
+        let mut preloaded = vec![prepared("/w/other.jpg"), prepared("/w/keep.png")];
+        let pairs = vec![
+            ("/w/sunset.jpg".into(), "/w/sunset.png".into()),
+            ("/w/other.jpg".into(), "/w/other.png".into()),
+        ];
+        assert!(relink_daemon_state(&mut current, &mut library, &mut preloaded, &pairs));
+        assert_eq!(current.as_ref().unwrap().source, "/w/sunset.png");
+        assert_eq!(library, vec!["/w/sunset.png", "/w/other.png"]);
+        assert_eq!(preloaded.len(), 1);
+        assert_eq!(preloaded[0].source, "/w/keep.png");
+
+        // No-op or empty pairs make no change.
+        assert!(!relink_daemon_state(
+            &mut current,
+            &mut library,
+            &mut preloaded,
+            &[
+                ("/w/sunset.png".into(), String::new()),
+                ("/w/missing.jpg".into(), "/w/new.png".into()),
+            ],
+        ));
+        assert_eq!(current.as_ref().unwrap().source, "/w/sunset.png");
+
+        // If a rescan already added `new` alongside `old`, library stays deduplicated.
+        library.push("/w/sunset.jpg".into());
+        assert!(relink_daemon_state(
+            &mut current,
+            &mut library,
+            &mut preloaded,
+            &[("/w/sunset.jpg".into(), "/w/sunset.png".into())],
+        ));
+        assert_eq!(library.iter().filter(|p| *p == "/w/sunset.png").count(), 1);
+        assert!(!library.contains(&"/w/sunset.jpg".to_string()));
     }
 }
