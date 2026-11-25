@@ -1,103 +1,73 @@
 # Wallslæd Agent Instructions
 
-The authoritative instructions for every coding agent working on this repository. Tool-specific files (`CLAUDE.md`, skills, memories) defer to this file.
+Project-specific instructions for Wallslæd (shared workflow, Single-Pick Validation, git hygiene, and shell rules live in global `~/.claude/CLAUDE.md`). Tool stubs (`CLAUDE.md`) defer here.
 
 ## Read First
 
-1. `CURRENT_TASKS.md`: what is in progress, its state, and what comes next. It is a local working file, not tracked by Git, so it may be missing in a fresh clone.
-2. `AGENTS.local.md`, if present: facts about this machine (folders, mounts, hardware, shell quirks). Also local and untracked.
-3. `ROADMAP.md`: ideas and research not yet started. Nothing there is approved work; ask before starting an item.
-4. `docs/how-it-works.md`: how the daemon, extension and player fit together, and why they are separate. `README.md` is the user guide.
-5. `git status`: if there is uncommitted work you did not create, find out what it is before touching anything.
+1. `CURRENT_TASKS.md`: active work and state (local, git-ignored).
+2. `AGENTS.local.md`, if present: machine-specific facts (local, git-ignored).
+3. `ROADMAP.md`: unstarted ideas; ask before starting an item.
+4. `docs/how-it-works.md`: how daemon, extension, and player fit together. `README.md` is the user guide.
 
 ## The Golden Rule: the Live Desktop Is Off-Limits
 
-This project runs inside the user's real GNOME session, on the machine they are using right now. Mistakes here have already changed real settings once (see Lessons Learned). Without the user's explicit go-ahead **for that action, in this session**, do not:
+This project runs inside the user's real GNOME session. Without explicit go-ahead **for that action, in this session**, never:
+- run `./install.sh` / `./uninstall.sh` or copy into `~/.local/bin`, `~/.local/share/gnome-shell/extensions/`, or `~/.local/share/glib-2.0/schemas/`;
+- `gnome-extensions enable|disable`, or restart/stop/kill `wallslaed.service`, `wallslaed-player`, `gnome-shell`, Nautilus, or other user processes;
+- run mutating `wallslaed` commands (`next`, `prev`, `pause`, `play`, `stop`, `ban`, `favorite`, `download`, `rescan`);
+- write real settings (`gsettings set|reset`, `dconf write|reset`);
+- download large files or call external APIs (`yt-dlp`, Pexels, Pixabay) with real network traffic.
 
-- run `./install.sh` or `./uninstall.sh`, or copy files into `~/.local/bin`, `~/.local/share/gnome-shell/extensions/` or `~/.local/share/glib-2.0/schemas/`;
-- `gnome-extensions enable|disable`, or restart, stop or kill `wallslaed.service`, `wallslaed-player`, `gnome-shell`, Nautilus or any other user process;
-- run `wallslaed` commands that change things on the real daemon (`next`, `prev`, `pause`, `play`, `stop`, `ban`, `favorite`, `download`, `rescan`);
-- write real settings: `gsettings set|reset`, `dconf write|reset`, or anything under `/io/github/hebbihebb/Wallslaed/` or `org.gnome.*`;
-- download anything large, or call external APIs (yt-dlp, Pexels, Pixabay) with real network traffic.
-
-Reading is fine: `wallslaed status`, `gsettings get`, `journalctl`, `systemctl --user status`, `git` inspection.
+Read-only probes (`wallslaed status`, `gsettings get`, `journalctl`, `systemctl --user status`, `git`) are fine.
 
 ## User Data
 
-Irreplaceable; never modify, move or delete, and never point a test at it:
+Irreplaceable; never modify, move, delete, or point tests at:
+- `~/.local/state/wallslaed/state.json` (favorites, bans, history, shuffle position) and `media.json` (active music video, saved positions);
+- configured wallpaper and music-video folders (paths in `AGENTS.local.md`; daemon only reads sources, generated files go to `~/.cache/wallslaed`);
+- user GNOME settings (`dconf`).
 
-- `~/.local/state/wallslaed/state.json`: favorites, bans, history and shuffle position. `media.json` next to it: the active music video and saved positions.
-- The configured wallpaper folder and the music video folder (paths in `AGENTS.local.md`). The daemon only ever reads source files; generated files go to `~/.cache/wallslaed`.
-- The user's GNOME settings (dconf).
+## Isolated Testing
 
-Network mounts (listed in `AGENTS.local.md`) may be **hard NFS mounts**: if the network drops, anything that touches them hangs forever. Never scan, `stat`, `ls` or `find` them, and never use them as test folders. If you must, wrap the command in `timeout -s KILL 5`.
-
-## Testing Without Touching the Desktop
-
-Anything that uses GSettings, D-Bus, the daemon, the player or a GNOME Shell runs through **`tools/isolated-session.sh`**, which gives it its own home, settings, runtime folder and session bus:
+Run anything touching GSettings, D-Bus, daemon, player, or GNOME Shell through **`tools/isolated-session.sh`**:
 
 ```bash
 cargo build --release
 tools/isolated-session.sh --install <scratch-dir> <test-script>
-# inside the script, a headless shell:
+# inside script:
 #   gnome-shell --headless --virtual-monitor 1920x1080 --wayland --no-x11 &
 #   gdbus wait --session --timeout 40 org.gnome.Shell
-#   gnome-extensions enable wallslaed@hebbihebb   # starts INITIALIZED in headless mode
+#   gnome-extensions enable wallslaed@hebbihebb
 ```
 
-- **Never** hand-roll `dbus-run-session -- script` with `export HOME=...` inside the script. Services the bus starts on demand (dconf-service above all) inherit the bus's environment, so their writes land in the real home.
-- If the script prints `WARNING: real settings now refer to the scratch folder`, stop and tell the user. A `NOTE` listing only `org/gnome/desktop/background` is the real daemon rotating, not a leak.
-- Make test media with `ffmpeg -f lavfi` (testsrc2 plus sine); never copy the user's files.
-- Keep scratch folders in the session scratchpad, or in `.scratch/` when the results must survive a reboot (see Git); the script refuses folders inside the real home's config.
+- **Never** hand-roll `dbus-run-session -- script` with `export HOME=...` inside the script (D-Bus-activated `dconf-service` inherits the bus env and writes to real settings).
+- Stop and alert the user if the script prints `WARNING: real settings now refer to the scratch folder` (`NOTE` for `org/gnome/desktop/background` alone is just the real daemon rotating).
+- Generate test media with `ffmpeg -f lavfi` (testsrc2 + sine); never copy user files. Keep lasting scratch dirs in `.scratch/` (git-ignored). Wayland socket paths cap at 108 bytes (`tools/isolated-session.sh` handles short `XDG_RUNTIME_DIR`).
 
 ## Code Rules
 
-- **GNOME Shell code runs inside the compositor.** No blocking I/O or synchronous subprocess waits in `extension/`. Everything created in `enable()` (signals, GLib sources, actors, subprocesses) is cleaned up in `disable()`, which also runs on every screen lock. Write to a subprocess's stdin one command at a time (GIO allows one pending write per stream).
-- **Daemon borrows:** never hold a `RefCell` borrow of `Daemon` across a `gio::Settings` setter, signal emission or anything else that can run our handlers synchronously. Clone what you need, drop the borrow, then call (audit finding F1).
-- **D-Bus interface:** `INTROSPECTION` in `daemon/src/daemon.rs` and `IFACE_XML` in `extension/wallslaed@hebbihebb/iface.js` change together.
-- **Settings schema** changes are additive (new keys only), and `glib-compile-schemas --strict --dry-run data` must pass.
-- The player must exit on its own within two seconds of `quit` or end of stdin; the extension relies on that instead of kill timers.
-- Prefer extending existing code to rewriting it. Justify every new dependency.
+- **GNOME Shell runs in the compositor:** no blocking I/O or synchronous subprocess waits in `extension/`. Clean up everything created in `enable()` inside `disable()` (runs on every screen lock). Write to subprocess stdin one command at a time.
+- **Daemon borrows:** never hold a `RefCell` borrow of `Daemon` across a `gio::Settings` setter, signal emission, or synchronous callback (clone, drop borrow, call).
+- **D-Bus & schema:** keep `INTROSPECTION` (`daemon/src/daemon.rs`) and `IFACE_XML` (`extension/wallslaed@hebbihebb/iface.js`) in sync. Schema changes are additive; `glib-compile-schemas --strict --dry-run data` must pass.
+- Player must exit within 2 s of `quit` or stdin EOF. Prefer extending existing code; justify every new dependency.
 
-## Verification
+## Verification & Git
 
 | Change | Minimum check |
 | --- | --- |
-| Docs only | `git diff --check`; referenced paths and commands exist |
+| Docs only | `git diff --check`; referenced paths/commands exist |
 | Rust (daemon, player) | `cargo build --workspace` and `cargo test --workspace`, no warnings |
 | Settings schema | `glib-compile-schemas --strict --dry-run data` |
-| Extension JS | Syntax check, then a headless run through `tools/isolated-session.sh`, with no `JS ERROR` mentioning Wallslæd in the shell log |
-| Daemon/player behaviour | A scripted run through `tools/isolated-session.sh` exercising the changed path |
-| Anything for the live desktop | Ask first (Golden Rule), then follow what the user approves |
+| Extension JS | Syntax check + headless `tools/isolated-session.sh` run with 0 Wallslæd `JS ERROR`s; probe visible result directly (headless screenshots hide blur) |
+| Daemon/player behaviour | Scripted `tools/isolated-session.sh` run exercising changed path |
+| Live desktop | Ask first (Golden Rule) |
 
-Hand back evidence, not homework: what passed, what failed, what was **not** tested, and one sentence on what the user should try by hand. Report state with these words: *planned*, *implemented* (in the working tree), *verified* (checks passed), *accepted* (the user tried it), *committed*, *merged*, *installed* (in the user's live session).
-
-## Git
-
-- `main` holds accepted work only. Work happens on `feature/<name>` or `fix/<name>` branches (Codex: `codex/<name>`).
-- **Worktrees go inside the repo**, under `.worktrees/<branch-name>` (git-ignored), never in `/tmp`, which a reboot clears. Evidence that must outlive the session (audit probes, scripts, logs) goes in `.scratch/<name>/`, also git-ignored. Remove a worktree with `git worktree remove` once its branch is merged or abandoned.
-- Commit each testable unit on its branch; never end a session with large uncommitted work without recording its state in `CURRENT_TASKS.md`.
-- Never push, force-push, delete branches or rewrite published history without explicit approval. The remote is `github.com/hebbihebb/Wallslaed`, which is **public**: tracked files must not contain personal or machine-specific details (home paths, hardware, mounts, the user's folders, settings or habits). Those go in `CURRENT_TASKS.md` or `AGENTS.local.md`, which are git-ignored.
-- The user prefers plain-language explanations of Git decisions.
-
-## Audits
-
-Only when the user asks, on its own branch:
-
-1. **Audit:** write `AUDIT.md` (ID, severity, `file:line`, scenario, confirmed or suspected, proposed fix). Change no code. Write paths relative to the repo or `~`, never the absolute home path.
-2. **Review:** go through the findings with the user; they accept, reject or defer each one.
-3. **Fix:** only the accepted findings, then delete `AUDIT.md` so it never reaches `main`.
-
-## Shell
-
-- Never `pgrep -f` or `pkill -f` a pattern that appears in your own command line; it matches your own shell. Use `pgrep -x <name>`, or bracket a letter: `pgrep -f '[w]allslaed-player'`.
-- Wayland socket paths are limited to 108 bytes, so nested sessions need a short `XDG_RUNTIME_DIR` (`tools/isolated-session.sh` handles it).
-- End optional probes (`ls`, `which`) with `|| true`.
-- Machine-specific shell quirks (aliases, tool locations) are in `AGENTS.local.md`.
+- **State vocabulary:** *planned*, *implemented*, *verified*, *accepted*, *committed*, *merged*, *installed*.
+- **Public repo (`github.com/hebbihebb/Wallslaed`):** never commit personal or machine-specific details (home paths, hardware, mounts, folders, habits); put those in git-ignored `CURRENT_TASKS.md` or `AGENTS.local.md`. Keep worktrees under `.worktrees/<branch>` (never `/tmp`, which reboots clear).
 
 ## Lessons Learned
 
-- **2026-10-25, settings leak:** a headless test exported a scratch `HOME` *inside* `dbus-run-session`. dconf-service ran with the real home, and test values were written into the user's real settings: the wallpaper folder became `/x`, the interval 7 seconds, and the enabled-extension list was replaced. The originals were reconstructed from intact state; the true original interval is unknown. Hence `tools/isolated-session.sh` and the Golden Rule.
-- **2026-10-25, `cp -i` hang:** a test copied files with plain `cp`, which waited invisibly at an overwrite prompt.
-- **2026-10-26, wrong process:** inside `tools/isolated-session.sh`, `pgrep -xo gnome-shell` (and `pgrep -xo wallslaed`) finds the user's real process, which is older, not the test's. A test meant to read the nested shell's memory read the real one, and `eu-stack` attached to the real GNOME Shell for up to 20 s (it kept running). Use `$!` right after starting the test's own process, and check a PID's command line (`--headless`) before attaching to or killing it.
-- **2026-10-26, GNOME deadlock under fast wallpaper changes:** a headless GNOME Shell 51 hangs for good after tens of changes 0.35 s apart, with or without Wallslæd (GJS bug, see `docs/gnome-gjs-deadlock.md`). Stress tests change wallpapers no faster than every 1.5 s, and stop on a hang instead of waiting for their timeout. 1.5 s only narrows the risk: a 1.5 s full-stack run hung at change 275 on 2026-11-06.
+- **2026-10-25, settings leak:** `HOME` exported inside `dbus-run-session` leaked test values into real `dconf`. Always use `tools/isolated-session.sh`.
+- **2026-10-26, wrong process:** `pgrep -xo gnome-shell` / `wallslaed` matches the live user process, not the nested test process (`eu-stack` attached to live GNOME Shell). Track `$!` directly and verify `--headless` before attaching/killing.
+- **2026-10-26, GNOME 51 wallpaper deadlock:** GJS 1.90 hangs under rapid wallpaper changes (`docs/gnome-gjs-deadlock.md`). Keep stress-test intervals ≥1.5 s and abort on hang (1.5 s only narrows risk; a 1.5 s run hung at change 275 on 2026-11-06).
+- **2026-11-07, invisible blur regression:** headless screenshots hid opaque popup tint; always probe visible alpha/style directly.
