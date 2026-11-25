@@ -24,6 +24,7 @@ usage: wallslaed <command>
   ban           never show the current wallpaper again
   show          open the current wallpaper's folder in Files
   rescan        re-read the wallpaper folder
+  relink <old> <new>  a file was replaced or moved: its favorite and ban follow
   status        print what's showing
   music         list the music videos
   play <file>   play a music video (with sound) instead of the rotation
@@ -43,6 +44,11 @@ fn main() {
         "ban" => call("Ban", None),
         "show" | "reveal" => call("ShowInFiles", None),
         "rescan" => call("Rescan", None),
+        "relink" => match (std::env::args().nth(2), std::env::args().nth(3)) {
+            (Some(old), Some(new)) => request("Relink", Some((vec![(old, new)],).to_variant()))
+                .map(|reply| println!("moved {}", reply.child_value(0).get::<u32>().unwrap_or(0))),
+            _ => Err(USAGE.to_owned()),
+        },
         "status" => status(),
         "music" => list_media(),
         "play" => match std::env::args().nth(2) {

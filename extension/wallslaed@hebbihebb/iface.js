@@ -15,6 +15,10 @@ export const IFACE_XML = `
     <method name="TogglePause"/>
     <method name="ToggleFavorite"/>
     <method name="Ban"/>
+    <method name="Relink">
+      <arg type="a(ss)" name="pairs" direction="in"/>
+      <arg type="u" name="moved" direction="out"/>
+    </method>
     <method name="Rescan"/>
     <method name="ShowInFiles"/>
     <method name="GetState"><arg type="a{sv}" name="state" direction="out"/></method>

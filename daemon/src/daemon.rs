@@ -26,6 +26,10 @@ const INTROSPECTION: &str = r#"
     <method name="TogglePause"/>
     <method name="ToggleFavorite"/>
     <method name="Ban"/>
+    <method name="Relink">
+      <arg type="a(ss)" name="pairs" direction="in"/>
+      <arg type="u" name="moved" direction="out"/>
+    </method>
     <method name="Rescan"/>
     <method name="ShowInFiles"/>
     <method name="GetState"><arg type="a{sv}" name="state" direction="out"/></method>
@@ -416,6 +420,18 @@ fn handle_method(d: &Shared, method: &str, params: &Variant, inv: gio::DBusMetho
                 save_state(&d.borrow());
             }
             advance(d, Step::Next);
+        }
+        // Another app replaced files: favorites and bans follow (old, new).
+        "Relink" => {
+            let pairs = params
+                .child_value(0)
+                .get::<Vec<(String, String)>>()
+                .unwrap_or_default();
+            let moved = d.borrow_mut().bag.relink(&pairs);
+            save_state(&d.borrow());
+            emit_changed(d);
+            inv.return_value(Some(&(moved,).to_variant()));
+            return;
         }
         "Rescan" => rescan(d),
         "ShowInFiles" => show_in_files(d),

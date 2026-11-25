@@ -156,6 +156,8 @@ wallslaed stop              stop it
 wallslaed download <link>   download one
 ```
 
+When another program replaces or moves a wallpaper (an upscaled copy taking the original's place, for example), `wallslaed relink <old> <new>` makes its favorite and "never show" follow the new path. The same call is on D-Bus as `Relink(a(ss))`, taking several pairs at once; the image organizer Sharpr uses it after a replacement and its Undo.
+
 ## Troubleshooting
 
 **The wallpaper keeps flipping back, or two wallpapers fight.**

@@ -174,6 +174,48 @@ impl Bag {
         Some(cur)
     }
 
+    /// Another app replaced or moved files (Sharpr's Replace with upgrade):
+    /// each `(old, new)` path's favorite, ban, place in the cycle and history
+    /// follow it to `new`. Works whether or not a rescan has already noticed
+    /// the change, since favorites and bans are never dropped by a scan.
+    /// Returns how many favorites and bans moved.
+    pub fn relink(&mut self, pairs: &[(String, String)]) -> u32 {
+        let mut moved = 0;
+        for (old, new) in pairs {
+            if old == new {
+                continue;
+            }
+            if self.favorites.remove(old) {
+                self.favorites.insert(new.clone());
+                moved += 1;
+            }
+            if self.banned.remove(old) {
+                self.banned.insert(new.clone());
+                moved += 1;
+            }
+            for path in self.order.iter_mut().chain(self.history.iter_mut()) {
+                if path == old {
+                    *path = new.clone();
+                }
+            }
+        }
+        // A banned file waiting in the cycle (a rescan added the new path
+        // before the relink) leaves it.
+        let mut pos = self.pos;
+        let banned = &self.banned;
+        let mut index = 0;
+        self.order.retain(|p| {
+            let keep = !banned.contains(p);
+            if !keep && index < pos {
+                pos -= 1;
+            }
+            index += 1;
+            keep
+        });
+        self.pos = pos.min(self.order.len());
+        moved
+    }
+
     fn push_history(&mut self, path: String) {
         self.history.truncate(self.cursor + 1);
         self.history.push(path);
@@ -426,5 +468,60 @@ mod tests {
             }
         }
         assert!(hits > 30, "favorite shown {hits} times in ~20 cycles");
+    }
+
+    // Sharpr's Replace with upgrade: favorites and bans follow the new file.
+    #[test]
+    fn relink_moves_favorites_bans_order_and_history() {
+        let library = lib(10);
+        let mut rng = fastrand::Rng::with_seed(5);
+        let mut bag = Bag::default();
+        bag.sync(&library, true, &mut rng);
+        bag.next(&library, &all, 1, &mut rng);
+        bag.toggle_favorite();
+        let fav = bag.current().unwrap().to_owned();
+        let banned = library.iter().find(|p| **p != fav).unwrap().clone();
+        bag.banned.insert(banned.clone());
+        let pairs = vec![
+            (fav.clone(), "/w/fav-upscaled.png".to_string()),
+            (banned.clone(), "/w/banned-upscaled.png".to_string()),
+        ];
+        assert_eq!(bag.relink(&pairs), 2);
+        assert!(bag.favorites.contains("/w/fav-upscaled.png") && !bag.favorites.contains(&fav));
+        assert!(bag.banned.contains("/w/banned-upscaled.png") && !bag.banned.contains(&banned));
+        assert_eq!(bag.current(), Some("/w/fav-upscaled.png"), "history follows");
+        // And back again (Undo).
+        let back: Vec<_> = pairs.iter().map(|(a, b)| (b.clone(), a.clone())).collect();
+        assert_eq!(bag.relink(&back), 2);
+        assert!(bag.favorites.contains(&fav) && bag.banned.contains(&banned));
+    }
+
+    // The rescan can win the race: the old path is already gone from the
+    // scan and the new one added to the cycle before the relink arrives.
+    #[test]
+    fn relink_after_the_rescan_still_keeps_the_favorite_and_the_ban() {
+        let mut library = lib(10);
+        let mut rng = fastrand::Rng::with_seed(9);
+        let mut bag = Bag::default();
+        bag.sync(&library, true, &mut rng);
+        let fav = library[3].clone();
+        let banned = library[4].clone();
+        bag.favorites.insert(fav.clone());
+        bag.banned.insert(banned.clone());
+        library[3] = "/w/fav-new.png".into();
+        library[4] = "/w/banned-new.png".into();
+        bag.sync(&library, true, &mut rng);
+        assert!(bag.order.contains(&"/w/banned-new.png".to_string()), "added as fresh");
+        bag.relink(&[
+            (fav.clone(), "/w/fav-new.png".into()),
+            (banned.clone(), "/w/banned-new.png".into()),
+        ]);
+        assert!(bag.favorites.contains("/w/fav-new.png"));
+        assert!(bag.banned.contains("/w/banned-new.png"));
+        assert!(!bag.order.contains(&"/w/banned-new.png".to_string()), "banned leaves the cycle");
+        assert!(bag.pos <= bag.order.len());
+        for _ in 0..30 {
+            assert_ne!(bag.next(&library, &all, 1, &mut rng).as_deref(), Some("/w/banned-new.png"));
+        }
     }
 }
